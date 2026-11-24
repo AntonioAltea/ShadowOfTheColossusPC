@@ -22,7 +22,13 @@ namespace
 
     bool selected()
     {
-        return hostmenu::settings().screenMode.load(std::memory_order_relaxed) == hostmenu::kScreenWidescreen;
+        const int mode = hostmenu::settings().screenMode.load(std::memory_order_relaxed);
+        return mode == hostmenu::kScreenWidescreen || mode == hostmenu::kScreenDeck;
+    }
+
+    bool deck()
+    {
+        return hostmenu::settings().screenMode.load(std::memory_order_relaxed) == hostmenu::kScreenDeck;
     }
 
     bool active()
@@ -39,7 +45,9 @@ namespace
         // Refresh before building camera matrices so a save state never
         // overrides the host's current aspect selection.
         constexpr float wideInterlaced = std::bit_cast<float>(0x3Faaaaaau);
-        const float ratio = wide ? (progressive ? 1.0f : wideInterlaced) : (progressive ? 0.75f : 1.0f);
+        // 16:10 is the same projection with (16/10) / (4/3) = 1.2 instead of 4/3.
+        const float ratio = deck() ? (progressive ? 0.9f : 1.2f)
+                          : wide ? (progressive ? 1.0f : wideInterlaced) : (progressive ? 0.75f : 1.0f);
         std::memcpy(rdram + kWideRatio, &ratio, sizeof(ratio));
         hostmenu::settings().widescreenActive.store(wide, std::memory_order_relaxed);
     }
@@ -70,6 +78,8 @@ namespace
     {
         // Center the original 4:3 layout in the anamorphic 16:9 picture.
         // Int64 covers the full signed input range before rounding.
+        if (deck())
+            return static_cast<int32_t>((static_cast<int64_t>(x) * 5 + (x < 0 ? -3 : 3)) / 6);
         return static_cast<int32_t>((static_cast<int64_t>(x) * 3 + (x < 0 ? -2 : 2)) / 4);
     }
 

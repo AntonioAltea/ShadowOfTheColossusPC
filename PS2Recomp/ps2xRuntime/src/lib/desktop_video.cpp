@@ -11,6 +11,8 @@
 #include <fstream>
 #include <iterator>
 
+namespace ps2_stubs { bool mpegPlaybackActive(); }
+
 namespace desktop_video
 {
 namespace
@@ -158,9 +160,9 @@ Rectangle destination(int width, int height, int sourceWidth, int sourceHeight, 
     const float w = static_cast<float>(std::max(1, width));
     const float h = static_cast<float>(std::max(1, height));
     float dw = w, dh = h;
-    if (mode == hostmenu::kScreenFit || mode == hostmenu::kScreenWidescreen)
+    if (mode == hostmenu::kScreenFit || mode == hostmenu::kScreenWidescreen || mode == hostmenu::kScreenDeck)
     {
-        const float aspect = mode == hostmenu::kScreenWidescreen ? hostmenu::kWidescreenAspect : hostmenu::kOriginalAspect;
+        const float aspect = mode == hostmenu::kScreenDeck ? hostmenu::kDeckAspect : mode == hostmenu::kScreenWidescreen ? hostmenu::kWidescreenAspect : hostmenu::kOriginalAspect;
         dw = std::min(w, h * aspect);
         dh = std::min(h, w / aspect);
     }
@@ -338,6 +340,9 @@ bool loadShader(const char *path, std::string &error)
 
 void draw(Texture2D texture, int width, int height, bool flipY, int mode, bool upscaleFsr, bool fxaa)
 {
+    // Until the game applies its wide projection, and during films, the picture is 4:3 (as for 16:9).
+    if (mode == hostmenu::kScreenDeck && (!hostmenu::settings().widescreenActive || ps2_stubs::mpegPlaybackActive()))
+        mode = hostmenu::kScreenFit;
     const Rectangle target = destination(GetScreenWidth(), GetScreenHeight(), width, height, mode);
     const float scaleX = static_cast<float>(GetRenderWidth()) / std::max(1, GetScreenWidth());
     const float scaleY = static_cast<float>(GetRenderHeight()) / std::max(1, GetScreenHeight());

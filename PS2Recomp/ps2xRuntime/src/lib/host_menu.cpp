@@ -220,7 +220,7 @@ namespace
 #endif
         {kScreen, "Screen",
          "Fit keeps the original 4:3 view. Widescreen expands the view to 16:9. Both add bars when needed. "
-         "Stretch fills the screen. Sharp uses the largest whole multiple of the original size."},
+         "Stretch fills the screen. Sharp uses the largest whole multiple of the original size. Steam Deck is widescreen at 16:10, without bars on 1280 x 800."},
 #ifdef PS2X_DESKTOP_VIDEO
         {kVSync, "VSync", "Synchronizes frame presentation with the monitor to reduce tearing."},
         {kFullscreen, "Fullscreen", "Uses the current monitor's resolution in fullscreen. F11 also toggles this."},
@@ -380,7 +380,7 @@ namespace
 #endif
         case kScreen:
         {
-            static const char *modes[kScreenModeCount] = {"Fit (4:3)", "Stretch", "Sharp (whole scale)", "Widescreen (16:9)"};
+            static const char *modes[kScreenModeCount] = {"Fit (4:3)", "Stretch", "Sharp (whole scale)", "Widescreen (16:9)", "Steam Deck (16:10)"};
             return T(modes[std::clamp(g_settings.screenMode.load(), 0, kScreenModeCount - 1)]);
         }
         case kVolume:
@@ -785,6 +785,20 @@ bool inputBlocked() { return g_open || g_holdBlock; }
 void update()
 {
     ps2pad::pollGamepads();
+    // Development: SOTC_EMU_AT=<seconds> switches to the emulated PS2 picture.
+    if (const char *at = std::getenv("SOTC_EMU_AT"); at && GetTime() > std::atof(at))
+        native_renderer::tuning().showNative = false;
+    // Development: SOTC_AUTOLOAD=<slot>[:seconds] loads a state by itself.
+    static bool autoloaded = false;
+    if (const char *spec = std::getenv("SOTC_AUTOLOAD"); spec && !autoloaded)
+    {
+        const char *colon = std::strchr(spec, ':');
+        if (GetTime() > (colon ? std::atof(colon + 1) : 12.0))
+        {
+            autoloaded = true;
+            savestates::request(savestates::Action::Load, std::atoi(spec));
+        }
+    }
     readButtons();
     if (g_holdBlock && !anyDown())
         g_holdBlock = false;

@@ -15,11 +15,13 @@ namespace hostmenu
         kScreenStretch = 1, // fill the screen
         kScreenInteger = 2, // largest whole multiple (sharp pixels)
         kScreenWidescreen = 3, // the game's widescreen projection, fitted at 16:9
+        kScreenDeck = 4, // the widescreen projection at 16:10 (1280 x 800)
         kScreenModeCount,
     };
 
     inline constexpr float kOriginalAspect = 4.0f / 3.0f;
     inline constexpr float kWidescreenAspect = 16.0f / 9.0f;
+    inline constexpr float kDeckAspect = 16.0f / 10.0f;
 
     struct Settings
     {
