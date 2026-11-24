@@ -97,6 +97,17 @@ namespace native_renderer
         d.effectDetail = std::clamp(std::round(number("SOTC_EFFECT_DETAIL", d.effectDetail)), 0.0f, 2.0f);
 #ifdef PS2X_DESKTOP_VIDEO
         d.fxaa = number("SOTC_FXAA", d.fxaa) != 0.0f;
+        d.hdTextures = number("SOTC_HD_TEXTURES", d.hdTextures) != 0.0f;
+        d.contrast = std::clamp(number("SOTC_CONTRAST", d.contrast), 0.0f, 1.0f);
+        d.saturation = std::clamp(number("SOTC_SATURATION", d.saturation), 0.0f, 2.0f);
+        d.brightness = std::clamp(number("SOTC_BRIGHTNESS", d.brightness), 0.5f, 1.5f);
+        d.sharpen = std::clamp(number("SOTC_SHARPEN", d.sharpen), 0.0f, 1.0f);
+        d.rumble = std::clamp(number("SOTC_RUMBLE", d.rumble), 0.0f, 1.5f);
+        d.shadowDetail = std::clamp(std::round(number("SOTC_SHADOW_DETAIL", d.shadowDetail)), 0.0f, 2.0f);
+        d.groundVariation = number("SOTC_GROUND_VARIATION", d.groundVariation) != 0.0f;
+        d.ps2Look = std::clamp(number("SOTC_PS2_LOOK", d.ps2Look), 0.0f, 1.0f);
+        d.hdInterface = number("SOTC_HD_INTERFACE", d.hdInterface) != 0.0f;
+        d.autosave = number("SOTC_AUTOSAVE", d.autosave) != 0.0f;
 #endif
     }
 
@@ -283,6 +294,45 @@ namespace native_renderer
              "Mais próximo: texels quadrados. Bilinear: suave, um nível de mip. Trilinear: suave entre níveis de mip, no nível que o jogo escolhe pela distância (o padrão). "
              "Anisotrópico 2x-16x (Metal e OpenGL; no Vita vale trilinear): a GPU escolhe o nível pela área de cada pixel, então chão distante e encostas ficam nítidos em resolução alta.",
              nullptr, &Tuning::textureFilter, 0.0f, 6.0f, 1.0f, "SOTC_TEXTURE_FILTER"},
+            {"hd_textures", "HD textures", "Texturas HD",
+             "The HD texture pack in the hdtextures folder, where it has a texture; off: the game's own. Changes at once.",
+             "O pacote de texturas HD da pasta hdtextures, onde houver; desligado: as do jogo. Muda na hora.",
+             &Tuning::hdTextures, nullptr, 0, 1, 1, "SOTC_HD_TEXTURES"},
+            {"color_contrast", "Contrast", "Contraste", "Deepens shadows and brightens highlights on an S curve. 0: the game's.",
+             "Escurece as sombras e clareia os brilhos numa curva S. 0: o do jogo.", nullptr, &Tuning::contrast, 0.0f, 1.0f, 0.05f, "SOTC_CONTRAST"},
+            {"color_saturation", "Colour saturation", "Saturação", "How vivid the colours are. 1: the game's.", "Quão vivas são as cores. 1: a do jogo.",
+             nullptr, &Tuning::saturation, 0.0f, 2.0f, 0.05f, "SOTC_SATURATION"},
+            {"color_brightness", "Brightness", "Brilho", "The whole picture lighter or darker. 1: the game's.", "A imagem toda mais clara ou escura. 1: o do jogo.",
+             nullptr, &Tuning::brightness, 0.5f, 1.5f, 0.05f, "SOTC_BRIGHTNESS"},
+            {"sharpen", "Sharpening", "Nitidez", "Sharpens edges and textures. 0: off.", "Realça bordas e texturas. 0: desligado.",
+             nullptr, &Tuning::sharpen, 0.0f, 1.0f, 0.05f, "SOTC_SHARPEN"},
+            {"shadow_detail", "Shadow sharpness", "Nitidez das sombras", "0: the game's soft shadows. 1: sharper. 2: sharpest.", "0: as sombras suaves do jogo. 1: mais nítidas. 2: as mais nítidas.",
+             nullptr, &Tuning::shadowDetail, 0.0f, 2.0f, 1.0f, "SOTC_SHADOW_DETAIL"},
+            {"picture_profile", "Look", "Visual", "The whole look at once. PS2 original: as close to the console as it goes. Remaster: its mood with modern options. Modern: sharp and clean. Changing any value below shows Custom.",
+             "O visual inteiro de uma vez. PS2 original: o mais perto do console. Remaster: o clima dele com opções modernas. Moderno: nítido e limpo.", nullptr, &Tuning::pictureProfile, 0.0f, 3.0f, 1.0f, nullptr},
+            {"ps2_look", "PS2 softness", "Suavidade de PS2", "The softness, glow and fine grain of the picture on a television of its time. 0: off.",
+             "A suavidade, o brilho e o grão fino da imagem numa TV da época. 0: desligado.", nullptr, &Tuning::ps2Look, 0.0f, 1.0f, 0.1f, "SOTC_PS2_LOOK"},
+            {"picture_filter", "Colour filter", "Filtro de cor", "The colours of Sad Origami's ReShade presets, over the picture.", "As cores dos presets de ReShade do Sad Origami, por cima da imagem.", nullptr, &Tuning::colourFilter, 0.0f, 4.0f, 1.0f, nullptr},
+            {"picture_filter_strength", "Colour strength", "Força da cor", "How much of the colour filter.", "Quanto do filtro de cor.", nullptr, &Tuning::filterStrength, 0.0f, 1.0f, 0.1f, nullptr},
+            {"tv_filter", "TV filter", "Filtro de TV", "An old television (Cathode) or video camera (Handycam).", "Uma TV antiga (Cathode) ou uma câmera de vídeo (Handycam).", nullptr, &Tuning::tvFilter, 0.0f, 4.0f, 1.0f, nullptr},
+            {"tv_strength", "TV strength", "Força da TV", "How much of the TV filter.", "Quanto do filtro de TV.", nullptr, &Tuning::tvStrength, 0.0f, 1.0f, 0.1f, nullptr},
+            {"rumble", "Vibration", "Vibração", "The controller's motors, times the game's own. 0: off.", "Os motores do controle, vezes os do jogo. 0: desligado.",
+             nullptr, &Tuning::rumble, 0.0f, 1.5f, 0.25f, "SOTC_RUMBLE"},
+            {"autosave", "Automatic save states", "Estados automáticos", "A save state every 10 minutes of play, in three slots of their own in turn. The memory card is not touched.",
+             "Um estado a cada 10 minutos, em três espaços próprios. O cartão de memória não é alterado.", &Tuning::autosave, nullptr, 0, 1, 1, "SOTC_AUTOSAVE"},
+            {"ground_variation", "Ground variation", "Variação do chão", "Breaks up the repetition of grass, earth and sand. Off: the game's tiles. Costs GPU time.",
+             "Quebra a repetição da grama, terra e areia. Desligado: os ladrilhos do jogo. Custa tempo de GPU.", &Tuning::groundVariation, nullptr, 0, 1, 1, "SOTC_GROUND_VARIATION"},
+            {"mod_outfit", "Wander's outfit", "Roupa de Wander", "Replaces Wander's clothes. Changes at once.", "Replaces Wander's clothes. Changes at once.", nullptr, &Tuning::modOutfit, 0.0f, 4.0f, 1.0f, nullptr},
+            {"mod_cloak", "Cloak", "Capa", "Replaces the cloak, over any outfit.", "Replaces the cloak, over any outfit.", nullptr, &Tuning::modCloak, 0.0f, 2.0f, 1.0f, nullptr},
+            {"mod_agro", "Agro", "Agro", "Another coat for Agro.", "Another coat for Agro.", nullptr, &Tuning::modAgro, 0.0f, 3.0f, 1.0f, nullptr},
+            {"mod_mono", "Mono", "Mono", "Another dress for Mono.", "Another dress for Mono.", nullptr, &Tuning::modMono, 0.0f, 1.0f, 1.0f, nullptr},
+            {"mod_items", "Weapons and items", "Armas e itens", "Other skins for sword, bow and items.", "Other skins for sword, bow and items.", nullptr, &Tuning::modItems, 0.0f, 1.0f, 1.0f, nullptr},
+            {"mod_icons", "HUD icons", "Ícones do HUD", "Minimal icons, or none at all (Hard Mode +).", "Minimal icons, or none at all (Hard Mode +).", nullptr, &Tuning::modIcons, 0.0f, 2.0f, 1.0f, nullptr},
+            {"mod_gameover", "Game over screen", "Tela de fim de jogo", "The screens in the style of the remake.", "The screens in the style of the remake.", nullptr, &Tuning::modGameOver, 0.0f, 3.0f, 1.0f, nullptr},
+            {"mod_trail", "Map trail", "Trilha do mapa", "The colour of the trail on the map.", "The colour of the trail on the map.", nullptr, &Tuning::modTrail, 0.0f, 5.0f, 1.0f, nullptr},
+            {"mod_headband", "Rainbow headband", "Faixa arco-íris", "A rainbow headband for Wander.", "Uma faixa arco-íris para Wander.", &Tuning::modHeadband, nullptr, 0, 1, 1, nullptr},
+            {"mod_hints_off", "Hide Dormin's hints", "Esconder dicas de Dormin", "Removes the subtitles of Dormin's hints.", "Remove as legendas das dicas de Dormin.", &Tuning::modHintsOff, nullptr, 0, 1, 1, nullptr},
+            {"hd_interface", "HD interface", "Interface HD", "The HD pack's menus, subtitles, map and icons. Changes at once.", "Menus, legendas, mapa e ícones do pacote HD. Muda na hora.", &Tuning::hdInterface, nullptr, 0, 1, 1, "SOTC_HD_INTERFACE"},
             {"model_detail", "Model detail", "Detalhe dos modelos",
              "Which of a model's detail levels is drawn. Game's choice: the one the game picks by distance (the PS2's). Finer: one level more detailed. "
              "Finest: always the most detailed (far hills and colossi lose their blocky outlines; more geometry to draw).",
@@ -316,7 +366,7 @@ namespace native_renderer
              "SOTC_BLOOM_SPREAD"},
             {"vertex_fog", "Distance fog", "Névoa por distância", "The PS2's fog that fades far things into the air colour.",
              "A névoa do PS2 que apaga o que está longe na cor do ar.", &Tuning::vertexFog, nullptr, 0, 1, 1, "SOTC_NATIVE_NOVFOG"},
-            {"fog_amount", "Fog amount", "Quantidade de névoa", "Times the game's fog: 1 is the game's own.",
+            {"fog_amount", "Fog", "Quantidade de névoa", "Times the game's fog: 1 is the game's own.",
              "Vezes a névoa do jogo: 1 é a do próprio jogo.", nullptr, &Tuning::vertexFogAmount, 0.0f, 2.0f, 0.05f, "SOTC_FOG_AMOUNT"},
             {"zfog", "Depth fog", "Névoa de profundidade", "Far scenery fades into the sky.", "O cenário distante some no céu.",
              &Tuning::zFog, nullptr, 0, 1, 1, "SOTC_NATIVE_ZFOG"},
@@ -447,7 +497,8 @@ namespace native_renderer
         {
             const std::string key = item.key;
             item.quality = key == "quality_preset" || key == "render_scale" || key == "msaa" || key == "texture_filter" || key == "model_detail" ||
-                           key == "effect_detail" || key == "water_detail" || key == "fxaa";
+                           key == "effect_detail" || key == "water_detail" || key == "fxaa" || key == "hd_textures" ||
+                           key == "color_contrast" || key == "color_saturation" || key == "color_brightness" || key == "sharpen" || key == "shadow_detail" || key == "ground_variation" || key == "ps2_look";
             if (key == "msaa")
                 item.backends = 1;
             if (key == "effect_detail")
@@ -505,6 +556,47 @@ namespace native_renderer
             static const char *msaaPt[] = {"Desligado", "2x", "4x", "8x"};
             static const char *filterEn[] = {"Nearest", "Bilinear", "Trilinear", "Anisotropic 2x", "Anisotropic 4x", "Anisotropic 8x", "Anisotropic 16x"};
             static const char *filterPt[] = {"Mais próximo", "Bilinear", "Trilinear", "Anisotrópico 2x", "Anisotrópico 4x", "Anisotrópico 8x", "Anisotrópico 16x"};
+            static const char *modOutfitNames[] = {"Default", "Beta", "Brazilian", "Cursed", "Pagan"};
+            static const char *modCloakNames[] = {"Default", "Ico's", "Rainbow"};
+            static const char *modAgroNames[] = {"Default", "Deep Latte", "Rainbow Dash", "Pagan"};
+            static const char *modMonoNames[] = {"Default", "Pagan"};
+            static const char *modItemsNames[] = {"Default", "Pagan"};
+            static const char *modSkyNames[] = {"Default", "Cloudy", "Sunset"};
+            static const char *modIconsNames[] = {"Default", "Minimalist", "None (Hard Mode +)"};
+            static const char *modGameOverNames[] = {"Default", "Orange eyes", "Blue eyes", "No eyes"};
+            static const char *modTrailNames[] = {"Default", "Black", "Blue", "Pink", "Rainbow", "White"};
+            if (item.number == &Tuning::modOutfit)
+                return {5, modOutfitNames, modOutfitNames};
+            if (item.number == &Tuning::modCloak)
+                return {3, modCloakNames, modCloakNames};
+            if (item.number == &Tuning::modAgro)
+                return {4, modAgroNames, modAgroNames};
+            if (item.number == &Tuning::modMono)
+                return {2, modMonoNames, modMonoNames};
+            if (item.number == &Tuning::modItems)
+                return {2, modItemsNames, modItemsNames};
+            if (item.number == &Tuning::modSky)
+                return {3, modSkyNames, modSkyNames};
+            if (item.number == &Tuning::modIcons)
+                return {3, modIconsNames, modIconsNames};
+            if (item.number == &Tuning::modGameOver)
+                return {4, modGameOverNames, modGameOverNames};
+            if (item.number == &Tuning::modTrail)
+                return {6, modTrailNames, modTrailNames};
+            static const char *filterNames[] = {"Off", "Olive", "Mortar", "Scarlet", "Scarlet intense"};
+            static const char *tvNames[] = {"Off", "Cathode A", "Cathode B", "Cathode C", "Handycam"};
+            if (item.number == &Tuning::colourFilter)
+                return {5, filterNames, filterNames};
+            if (item.number == &Tuning::tvFilter)
+                return {5, tvNames, tvNames};
+            static const char *pictureEn[] = {"Custom", "PS2 original", "Remaster", "Modern"};
+            static const char *picturePt[] = {"Personalizado", "PS2 original", "Remaster", "Moderno"};
+            static const char *shadowEn[] = {"Soft (PS2)", "Sharper", "Sharpest"};
+            static const char *shadowPt[] = {"Suaves (PS2)", "Mais nítidas", "As mais nítidas"};
+            if (item.number == &Tuning::pictureProfile)
+                return {4, pictureEn, picturePt};
+            if (item.number == &Tuning::shadowDetail)
+                return {3, shadowEn, shadowPt};
             static const char *detailEn[] = {"Game's choice", "Finer", "Finest"};
             static const char *detailPt[] = {"Escolha do jogo", "Mais fino", "Máximo"};
             static const char *effectEn[] = {"PS2", "High", "Very high"};
@@ -524,6 +616,47 @@ namespace native_renderer
             if (item.number == &Tuning::hazeSource || item.number == &Tuning::waterSource)
                 return {3, sourceEn, sourcePt};
             return {0, nullptr, nullptr};
+        }
+    }
+
+    // The picture profiles: the look with what goes with it (not the resolution).
+    namespace
+    {
+        struct PictureValues
+        {
+            float look, fog, bloom, contrast, brightness, saturation, sharpen, filter, modelDetail, shadowDetail;
+            bool hd, ground, fxaa;
+        };
+        constexpr PictureValues kPictures[] = {
+            {}, // Custom
+            {0.9f, 0.85f, 1.0f, 0.1f, 0.95f, 1.0f, 0.0f, 2.0f, 0.0f, 0.0f, false, false, false},  // PS2 original
+            {0.9f, 0.85f, 1.0f, 0.1f, 0.95f, 1.05f, 0.0f, 2.0f, 0.0f, 0.0f, true, true, false},  // Remaster
+            {0.0f, 0.55f, 1.0f, 0.1f, 0.95f, 1.0f, 0.1f, 5.0f, 1.0f, 1.0f, true, true, true},    // Modern
+        };
+        constexpr int kPictureCount = static_cast<int>(sizeof(kPictures) / sizeof(kPictures[0]));
+        int matchingPicture(const Tuning &t)
+        {
+            const auto same = [](float a, float b) { return std::fabs(a - b) < 0.011f; };
+            for (int i = 1; i < kPictureCount; ++i)
+            {
+                const PictureValues &p = kPictures[i];
+                if (same(t.ps2Look, p.look) && same(t.vertexFogAmount, p.fog) && same(t.bloomStrength, p.bloom) && same(t.contrast, p.contrast) &&
+                    same(t.brightness, p.brightness) && same(t.saturation, p.saturation) && same(t.sharpen, p.sharpen) && same(t.textureFilter, p.filter) &&
+                    same(t.modelDetail, p.modelDetail) && same(t.shadowDetail, p.shadowDetail) && t.hdTextures == p.hd && t.groundVariation == p.ground &&
+                    t.fxaa == p.fxaa)
+                    return i;
+            }
+            return 0;
+        }
+        void applyPicture(Tuning &t, int i)
+        {
+            if (i < 1 || i >= kPictureCount)
+                return;
+            const PictureValues &p = kPictures[i];
+            t.ps2Look = p.look, t.vertexFogAmount = p.fog, t.bloomStrength = p.bloom, t.contrast = p.contrast, t.brightness = p.brightness;
+            t.saturation = p.saturation, t.sharpen = p.sharpen, t.textureFilter = p.filter, t.modelDetail = p.modelDetail, t.shadowDetail = p.shadowDetail;
+            t.hdTextures = p.hd, t.groundVariation = p.ground, t.fxaa = p.fxaa;
+            t.pictureProfile = static_cast<float>(i);
         }
     }
 
@@ -568,7 +701,7 @@ namespace native_renderer
         const float v = t.*item.number;
         if (const Choices c = choicesOf(item); c.count)
         {
-            const int i = item.number == &Tuning::preset ? matchingPreset(t) : std::clamp(static_cast<int>(v + 0.5f), 0, c.count - 1);
+            const int i = item.number == &Tuning::pictureProfile ? matchingPicture(t) : item.number == &Tuning::preset ? matchingPreset(t) : std::clamp(static_cast<int>(v + 0.5f), 0, c.count - 1);
             return (portuguese ? c.pt : c.en)[i];
         }
         if (item.number == &Tuning::renderScale)
@@ -629,6 +762,13 @@ namespace native_renderer
             p = p == kPresetCustom ? static_cast<int>(defaultTuning().preset) : (p + (dir > 0 ? 1 : kPresetCustom - 1)) % kPresetCustom;
 #endif
             applyPreset(t, p);
+            return;
+        }
+        if (item.number == &Tuning::pictureProfile)
+        {
+            const int now = matchingPicture(t);
+            applyPicture(t, now == 0 ? (dir > 0 ? 1 : kPictureCount - 1) : 1 + (now - 1 + (dir > 0 ? 1 : kPictureCount - 2)) % (kPictureCount - 1));
+            t.preset = static_cast<float>(matchingPreset(t));
             return;
         }
         float &v = t.*item.number;
@@ -1046,6 +1186,12 @@ namespace native_renderer
             g_backend->cancelFrameMesh();
     }
     bool hasTexture(uint64_t id) { return backend() && (g_backend->hasTexture(id) || asyncPending(id)); }
+    void uploadCompressed(uint64_t id, uint32_t width, uint32_t height, const uint8_t *blocks, size_t bytes, uint32_t levels,
+                          uint8_t alphaMin, uint8_t alphaMax)
+    {
+        if (backend())
+            g_backend->uploadCompressed(id, width, height, blocks, bytes, levels, alphaMin, alphaMax);
+    }
     void uploadTexture(uint64_t id, uint32_t width, uint32_t height, const uint8_t *rgba, uint32_t levels)
     {
         if (g_uploads.on)

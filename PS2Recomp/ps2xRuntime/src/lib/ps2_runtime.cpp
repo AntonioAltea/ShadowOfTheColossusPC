@@ -949,6 +949,9 @@ namespace
     }
 }
 
+// The native renderer's GL context shares objects with the window's (Linux).
+static bool g_sharedPresentWanted = false;
+
 bool PS2Runtime::initialize(const char *title)
 {
     try
@@ -1045,7 +1048,18 @@ bool PS2Runtime::initialize(const char *title)
             glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
             glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
             GLFWwindow *mainWindow = glfwGetCurrentContext();
-            GLFWwindow *nativeContext = glfwCreateWindow(16, 16, "native", nullptr, nullptr);
+#if defined(__linux__) && !defined(__ANDROID__)
+            // Sharing objects with the window's context: frames go on screen
+            // as textures. PS2X_NATIVE_READBACK=1 (and the snapshot and capture
+            // tools, which read the frame) keep the read back to memory.
+            g_sharedPresentWanted = !std::getenv("PS2X_NATIVE_READBACK") && !std::getenv("PS2X_SNAPSHOT_DIR");
+#endif
+            GLFWwindow *nativeContext = glfwCreateWindow(16, 16, "native", nullptr, g_sharedPresentWanted ? mainWindow : nullptr);
+            if (!nativeContext && g_sharedPresentWanted)
+            {
+                g_sharedPresentWanted = false;
+                nativeContext = glfwCreateWindow(16, 16, "native", nullptr, nullptr);
+            }
             glfwWindowHint(GLFW_VISIBLE, GLFW_TRUE);
             glfwMakeContextCurrent(mainWindow);
             if (nativeContext)
@@ -3114,6 +3128,8 @@ void PS2Runtime::run()
 #ifdef PS2X_DESKTOP_VIDEO
     Texture2D previousNativeTex{};
     Texture2D midpoint{};
+    Texture2D sharedTex{};
+    uint64_t sharedRevision = 0;
     double previousNativeArrival = -1.0;
     uint64_t previousNativeSlot = 0;
     uint64_t realFrameSlot = 0;
@@ -3235,7 +3251,24 @@ void PS2Runtime::run()
         }
         uint64_t midpointSlots = 0;
 #endif
-        if (nativeRequested)
+        bool sharedOnScreen = false;
+#ifdef PS2X_DESKTOP_VIDEO
+        // Frame generation holds two frames: it keeps the read back.
+        if (g_sharedPresentWanted)
+        {
+            native_renderer::setSharedPresent(!interpolationEnabled);
+            uint32_t texture = 0, sw = 0, sh = 0;
+            if (nativeRequested && !interpolationEnabled &&
+                native_renderer::sharedFrame(texture, sw, sh, sharedRevision) != native_renderer::FrameRead::Missing)
+            {
+                sharedTex = Texture2D{texture, static_cast<int>(sw), static_cast<int>(sh), 1, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8};
+                presentWidth = sw;
+                presentHeight = sh;
+                sharedOnScreen = nativeOnScreen = true;
+            }
+        }
+#endif
+        if (nativeRequested && !sharedOnScreen)
         {
             uint32_t nw = 0, nh = 0;
 #ifdef PS2X_DESKTOP_VIDEO
@@ -3303,7 +3336,11 @@ void PS2Runtime::run()
                 realFrameSlot = hostFrames + midpointSlots;
         }
 #endif
+#ifdef PS2X_DESKTOP_VIDEO
+        const Texture2D &shownTex = sharedOnScreen ? sharedTex : nativeOnScreen ? nativeTex : (g_directFrame.id ? g_directFrame : frameTex);
+#else
         const Texture2D &shownTex = nativeOnScreen ? nativeTex : (g_directFrame.id ? g_directFrame : frameTex);
+#endif
         // F9: the same moment twice, for comparing: the emulated picture (the
         // native one hidden for a few frames so the GS draws), the native one,
         // and the list of the native draws of that frame, in shots/f8_<n>_*.
@@ -3680,13 +3717,19 @@ void PS2Runtime::run()
         }
         else
 #endif
+        {
+            hostFrameFlipY = sharedOnScreen; // an OpenGL render target: y-up
             drawHostFrame(shownTex, presentWidth, presentHeight);
+            hostFrameFlipY = false;
+        }
 #endif
 #ifdef PS2X_DESKTOP_VIDEO
         // Count the picture submitted by EndDrawing. A held picture can be
         // swapped several times while the window and overlay keep updating.
         if (midpoint.id)
             presentation.submit({desktop_video::FrameSource::Generated, nativeRevision});
+        else if (sharedOnScreen)
+            presentation.submit({desktop_video::FrameSource::Native, sharedRevision | (1ull << 63)});
         else if (nativeOnScreen)
             presentation.submit({desktop_video::FrameSource::Native, nativeRevision});
         else

@@ -22,6 +22,7 @@
 // Not yet: the second texture and mip levels.
 
 #include "sotc_button_prompts.h"
+#include "sotc_hd_textures.h"
 #include "sotc_texture_mods.h"
 #include "ps2_runtime.h"
 #include "ps2_runtime_macros.h"
@@ -655,6 +656,202 @@ namespace sotc_native
 
     bool decodeTextureReference(uint32_t header, std::vector<uint8_t> &rgba, uint32_t &decodedOut);
 
+    // The HD pack's texture for the one with content key `key`, when it has
+    // one and it is on the GPU; 0: the game's own (asked for meanwhile).
+    uint64_t hdTexture(uint32_t header, uint64_t key)
+    {
+        struct Entry
+        {
+            uint64_t id = 0; // 0: the pack has none
+            const std::string *path = nullptr;
+        };
+        struct Held // by header: the game keeps rewriting some palettes
+        {
+            uint64_t id = 0, frame = 0;
+            uint32_t format = 0, changes = 0;
+            uint64_t key = 0;
+            std::vector<uint32_t> palette; // when the id was found
+        };
+        static std::unordered_map<uint64_t, Entry> entries;
+        static std::unordered_map<uint32_t, Held> held;
+        uint64_t changes = 0;
+        if (sotc_hd::active(changes).empty() || sotc_hd::index().empty())
+            return 0;
+        static uint64_t seenChanges = 0;
+        if (changes != seenChanges) // the menus turned something on or off
+        {
+            seenChanges = changes;
+            entries.clear();
+            held.clear();
+        }
+        const uint32_t format = word(header + 0x1Cu);
+        Held &h = held[header];
+        if (h.format != format)
+        {
+            h = Held{};
+            h.format = format;
+        }
+        if (h.key != key)
+        {
+            h.key = key;
+            ++h.changes;
+        }
+        const uint32_t colours = (format & 0x3Fu) == 0x14u ? 16u : 256u;
+        const uint32_t clut = textureClut(header, colours * 4u);
+        if (!clut)
+            return 0;
+        const auto near = [&](uint32_t from, const uint32_t *with) // palettes a little apart (no fade, no glow)
+        {
+            for (uint32_t i = 0; i < colours; ++i)
+            {
+                const uint32_t x = word(from + i * 4u), y = with ? with[i] : word(clut + i * 4u);
+                for (uint32_t c = 0; c < 32u; c += 8u)
+                    if (std::abs(static_cast<int>((x >> c) & 255u) - static_cast<int>((y >> c) & 255u)) > 16)
+                        return false;
+            }
+            return true;
+        };
+        // Between two states of one texture a little apart, one of them in
+        // the pack: held. (Fades and glows are the game's own texture.)
+        const auto hold = [&]() -> uint64_t
+        { return h.id && h.palette.size() == colours && near(clut, h.palette.data()) && native_renderer::hasTexture(h.id) ? h.id : 0; };
+        auto known = entries.find(key);
+        if (known == entries.end())
+        {
+            if (h.changes > 256u) // animated: no more hashing
+                return hold();
+            known = entries.emplace(key, Entry{}).first;
+            Entry &e = known->second;
+            TexSource src;
+            if (texSource(header, src) && (src.psm == 0x13u || src.psm == 0x14u))
+            {
+                const uint64_t pixels = sotc_hd::pixelHash(src.pixels.data(), src.pixels.size(), src.psm, src.width, src.height, (src.swizzleBits & 1u) != 0u);
+                const uint32_t entriesOf = src.psm == 0x14u ? 16u : 256u;
+                const uint64_t palette = sotc_xxh3::hash(reinterpret_cast<const uint8_t *>(src.palette), entriesOf * 4u);
+                uint64_t name = sotc_hd::combine(pixels, palette);
+                const sotc_hd::File *file = sotc_hd::find(name);
+                const bool exact = file != nullptr;
+                if (!exact)
+                {
+                    // Colours the pack has not seen: the texture file's own
+                    // palette, if near; else what it has for these pixels, if
+                    // its mean colour is near (effects share pixels).
+                    const uint32_t own = header + word(header + 0x18u);
+                    if (near(own, nullptr))
+                    {
+                        uint32_t base[256];
+                        for (uint32_t i = 0; i < colours; ++i)
+                            base[i] = word(own + (colours == 256u ? ((i & ~0x18u) | ((i & 8u) << 1) | ((i & 16u) >> 1)) : i) * 4u);
+                        name = sotc_hd::combine(pixels, sotc_xxh3::hash(reinterpret_cast<const uint8_t *>(base), colours * 4u));
+                        file = sotc_hd::find(name);
+                    }
+                    const bool byBase = file != nullptr;
+                    if (!byBase && (file = sotc_hd::find(name = sotc_hd::combine(pixels, 0))) != nullptr)
+                    {
+                        std::vector<uint8_t> rgba;
+                        uint32_t levels = 0;
+                        int hd[4], mean[4] = {};
+                        src.levels = 1;
+                        bool close = sotc_hd::meanColour(file->path, hd) && decodeTexture(src, rgba, levels) && levels;
+                        if (close)
+                        {
+                            uint64_t sum[4] = {};
+                            for (size_t i = 0; i + 3u < rgba.size(); i += 4u)
+                            {
+                                for (int c = 0; c < 3; ++c)
+                                    sum[c] += static_cast<uint64_t>(rgba[i + c]) * rgba[i + 3u];
+                                sum[3] += rgba[i + 3u];
+                            }
+                            for (int c = 0; c < 3; ++c)
+                                mean[c] = sum[3] ? static_cast<int>(sum[c] / sum[3]) : 0;
+                            mean[3] = static_cast<int>(sum[3] / std::max<size_t>(1u, rgba.size() / 4u));
+                            for (int c = 0; c < 4; ++c)
+                                close = close && std::abs(mean[c] - hd[c]) <= 40;
+                        }
+                        if (!close)
+                            file = nullptr;
+                    }
+                    static const bool log = std::getenv("SOTC_HD_LOG") != nullptr;
+                    if (log)
+                        std::fprintf(stderr, "[hd] frame %llu header %08x format %08x changes %u pixels %016llx palette %016llx: %s\n", (unsigned long long)g_frame, header, format,
+                                     h.changes, (unsigned long long)pixels, (unsigned long long)palette, byBase ? "by file palette" : file ? "by pixels" : "none");
+                }
+                static const bool logAll = std::getenv("SOTC_HD_LOG") != nullptr;
+                if (logAll && file && file->group.rfind("mods/", 0) == 0)
+                    std::fprintf(stderr, "[hd] frame %llu header %08x: %s (%s)\n", (unsigned long long)g_frame, header, file->path.c_str(), exact ? "exact" : "near");
+                if (file)
+                {
+                    e.path = &file->path;
+                    e.id = (((std::hash<std::string>{}(file->path) ^ name) * 0xD6E8FEB86659FD93ull) & 0x03FFFFFFFFFFFFFFull) | (1ull << 58);
+                }
+            }
+        }
+        Entry &e = known->second;
+        if (!e.id)
+            return hold();
+        if (native_renderer::hasTexture(e.id))
+        {
+            if (h.id != e.id || h.frame + 1u < g_frame)
+            {
+                h.palette.resize(colours);
+                for (uint32_t i = 0; i < colours; ++i)
+                    h.palette[i] = word(clut + i * 4u);
+            }
+            h.id = e.id;
+            h.frame = g_frame;
+            return e.id;
+        }
+        sotc_hd::Loader::get().request(e.id, *e.path);
+        return hold();
+    }
+
+    // The ground's textures (grass, earth, sand: noise, no figures), by PCSX2's
+    // hash of their pixels; ground.txt next to the HD pack adds more.
+    std::unordered_set<uint64_t> g_groundTextures; // texture ids drawn
+    bool isGround(uint32_t header, uint64_t key, uint32_t format)
+    {
+        static const std::unordered_set<uint64_t> known = []
+        {
+            std::unordered_set<uint64_t> list{0x91aba755191596f6ull, 0x0012a8432f0f2c02ull, 0x21424bb0215ddafbull, 0xc3a20aea62de5ab8ull, 0xb58963897a51133cull};
+            const char *dir = std::getenv("SOTC_HD_DIR");
+            std::ifstream file(std::string(dir && *dir ? dir : "hdtextures") + "/ground.txt");
+            for (std::string line; std::getline(file, line);)
+                if (const uint64_t v = std::strtoull(line.c_str(), nullptr, 16))
+                    list.insert(v);
+            return list;
+        }();
+        if ((format & 0x3Fu) != 0x13u && (format & 0x3Fu) != 0x14u)
+            return false;
+        if (((format >> 16) & 0xFu) < 7u || ((format >> 20) & 0xFu) < 7u || ((format >> 16) & 0xFu) > 10u || ((format >> 20) & 0xFu) > 10u)
+            return false; // small ones are not the ground's
+        static std::unordered_map<uint64_t, bool> seen;
+        const auto [it, fresh] = seen.try_emplace(key, false);
+        if (fresh && seen.size() < 4096u)
+        {
+            TexSource src;
+            it->second = texSource(header, src) &&
+                         known.count(sotc_hd::pixelHash(src.pixels.data(), src.pixels.size(), src.psm, src.width, src.height, (src.swizzleBits & 1u) != 0u)) != 0u;
+        }
+        return it->second;
+    }
+
+    // What the pack's loader has read, a little each frame.
+    void pumpHdTextures()
+    {
+        if (sotc_hd::index().empty())
+            return;
+        size_t budget = 4u << 20;
+        sotc_hd::Blob blob;
+        while (sotc_hd::Loader::get().take(blob))
+        {
+            if (!native_renderer::hasTexture(blob.id))
+                native_renderer::uploadCompressed(blob.id, blob.width, blob.height, blob.bytes.data(), blob.bytes.size(), blob.levels, blob.alphaMin, blob.alphaMax);
+            if (blob.bytes.size() >= budget)
+                break;
+            budget -= blob.bytes.size();
+        }
+    }
+
     uint64_t decodedTexture(uint32_t header)
     {
         if (!header || word(header) != 0x324F544Eu) // "NTO2"
@@ -738,6 +935,16 @@ namespace sotc_native
             buttonAtlas = isButtonAtlas();
         }
         if (buttonAtlas) key = sotc_button_prompts::textureKey(key, g_buttonPromptVariant);
+        const bool ground = !buttonAtlas && !changedInPlace && isGround(header, key, format);
+        if (ground)
+            g_groundTextures.insert(key);
+        if (!buttonAtlas && (psm == 0x13u || psm == 0x14u) && width <= 1024u && height <= 1024u)
+            if (const uint64_t hd = hdTexture(header, key))
+            {
+                if (ground)
+                    g_groundTextures.insert(hd);
+                return hd;
+            }
         if (native_renderer::hasTexture(key))
             return key;
         if ((psm != 0x00u && psm != 0x13u && psm != 0x14u) || width > 1024u || height > 1024u)
@@ -1713,6 +1920,7 @@ namespace sotc_native
         if (g_frame == 0)
             return;
         flush2D();
+        pumpHdTextures();
         // The GS vertex fog (every world batch has FGE): F = base + scale / w
         // from getFogFactor0/1 (0x1089b70/bb0), the colour as
         // graphSetFogParam last set FOGCOL (0x118b8dc/e0/e4).
@@ -2965,6 +3173,10 @@ namespace sotc_native
         syncFrame(rdram);
         const uint32_t chain = GPR_U32(ctx, 4), model = GPR_U32(ctx, 5);
         const bool skinnedShadow = GPR_U32(ctx, 10) != 0u;
+        static const bool slog = std::getenv("SOTC_SHADOW_LOG") != nullptr;
+        static uint32_t sn = 0;
+        const bool tell = slog && g_frame % 120u == 0u && sn < 60u && ++sn;
+        if (tell) std::fprintf(stderr, "[shadow] frame %llu pc %08x chain %08x tag %08x next %08x model %08x skinned %d t2 %08x\n", (unsigned long long)g_frame, ctx->pc, chain, word(chain), word(chain + 4u), model, skinnedShadow, GPR_U32(ctx, 10));
         g_shadowDisp(rdram, ctx, runtime);
         HookTimer hookTimer;
         const bool shadows = native_renderer::tuning().shadows;
@@ -2991,6 +3203,7 @@ namespace sotc_native
         static std::vector<Strip> strips;
         strips.clear();
         readBatches(word(tag + 4u), (word(tag) & 0xFFFFu) * 16u, strips);
+        if (tell) { size_t v = 0; for (auto &q : strips) v += q.size(); std::fprintf(stderr, "[shadow]   modeltag %08x %08x strips %zu verts %zu d %g %g %g  ret %08x%s\n", word(tag), word(tag + 4u), strips.size(), v, d[0], d[1], d[2], word(ret), skinnedShadow ? " pal" : ""); if (skinnedShadow) std::fprintf(stderr, "[shadow]   palette %u..%u first %g %g %g %g | %g %g %g\n", palette.lo, palette.hi, palette[palette.lo * 4u], palette[palette.lo * 4u + 1], palette[palette.lo * 4u + 2], palette[palette.lo * 4u + 3], palette[palette.lo * 4u + 12], palette[palette.lo * 4u + 13], palette[palette.lo * 4u + 14]); }
         auto toCamera = [&](const BatchVertex &v, float out[3])
         {
             if (!skinnedShadow)
@@ -3070,6 +3283,7 @@ namespace sotc_native
                     put(near[k]), put(far[l]), put(near[l]);
                 }
             }
+        if (tell) std::fprintf(stderr, "[shadow]   volume verts %zu first %g %g %g\n", g_volume.size(), g_volume.empty() ? 0.f : g_volume[0].x, g_volume.empty() ? 0.f : g_volume[0].y, g_volume.empty() ? 0.f : g_volume[0].z);
         if (g_volume.empty())
             return;
         float projection[16];
@@ -3089,7 +3303,9 @@ namespace sotc_native
         state.shadowVolume = true;
         static const float amount = std::getenv("SOTC_SHADOW_AMOUNT") ? std::strtof(std::getenv("SOTC_SHADOW_AMOUNT"), nullptr) : 0.5f;
         state.shadow = amount;
-        state.order = 7; // after the opaque world, before the transparent layers
+        // shadowDraw (layer 7) darkens with DATE / DATM (TEST 0x5d001): not the
+        // characters (layers 5 and 6). So over the opaque world, before them.
+        state.order = 4;
         native_renderer::draw(mesh, projection, state);
     }
 
@@ -4248,6 +4464,7 @@ namespace sotc_native
             state.background = state.order == 1u;            // the sky
             // Bit 7 is the PRIM's FGE in the GIF tag of every surface.
             state.noVertexFog = !((word(s + 0x18u) >> 7) & 1u);
+            state.ground = g_groundTextures.count(state.texture) != 0u;
             // modelDisp binds the off-screen boss mask for bit-17 surfaces,
             // not the placeholder texture carried by the material.
             uint64_t bossMask = 0;

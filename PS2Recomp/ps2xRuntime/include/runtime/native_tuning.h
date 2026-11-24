@@ -115,6 +115,21 @@ namespace native_renderer
         // frames in a row (SOTC_HOLD_INCOMPLETE=0/1; on by default on the Vita).
         bool holdIncomplete = false;
         bool fxaa = false;          // Desktop presentation anti-aliasing (SOTC_FXAA)
+        bool hdTextures = true;     // the HD texture pack, where there is one (SOTC_HD_TEXTURES=0/1)
+        // The picture's final look (OpenGL, shared present): S-curve contrast
+        // 0..1, saturation and brightness (1 = the game's), sharpening 0..1.
+        // All neutral: a plain copy. After PR 9 by felipmz.
+        float contrast = 0.0f, saturation = 1.0f, brightness = 1.0f, sharpen = 0.0f;
+        float rumble = 1.0f;        // the controller's motors, x the game's (0: off; SOTC_RUMBLE)
+        float shadowDetail = 0.0f;  // 0 the game's soft shadows, 1 sharper, 2 at the picture's size (OpenGL; SOTC_SHADOW_DETAIL)
+        bool groundVariation = true; // ground textures without visible repetition (OpenGL; SOTC_GROUND_VARIATION=0/1)
+        float ps2Look = 0.0f;       // the softness, glow and grain of a PS2 on its television, 0..1 (OpenGL; SOTC_PS2_LOOK)
+        float pictureProfile = 0.0f; // the menus' picture profile (shown by what the values match)
+        bool hdInterface = true;    // the HD pack's menus, subtitles and icons (SOTC_HD_INTERFACE=0/1)
+        float modOutfit = 0.0f, modCloak = 0.0f, modAgro = 0.0f, modMono = 0.0f, modItems = 0.0f, modSky = 0.0f, modIcons = 0.0f, modGameOver = 0.0f, modTrail = 0.0f; // 0: none
+        bool modHeadband = false, modHintsOff = false;
+        float colourFilter = 0.0f, filterStrength = 1.0f, tvFilter = 0.0f, tvStrength = 1.0f; // over the picture's own look (filters/, OpenGL), and how much
+        bool autosave = true;       // a save state every 10 minutes, three in turn (SOTC_AUTOSAVE=0/1)
     };
 
     // The settings (made from the environment on first use). Inline: the

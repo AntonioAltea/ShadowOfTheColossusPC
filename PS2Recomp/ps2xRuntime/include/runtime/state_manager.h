@@ -7,7 +7,8 @@
 class PS2Runtime;
 namespace savestates
 {
-    constexpr int SlotCount = 6; // 0 quick, 1..5 manual
+    constexpr int SlotCount = 9; // 0 quick, 1..5 manual, 6..8 automatic
+    constexpr int AutoSlot = 6;
     enum class Action { Save, Load, Delete };
     struct Slot { bool exists = false; uint64_t bytes = 0; std::string modified; };
     void bind(PS2Runtime *runtime);

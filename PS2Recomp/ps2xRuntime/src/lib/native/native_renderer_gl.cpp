@@ -47,7 +47,10 @@ extern "C" unsigned int _newlib_heap_size_user;      // ps2_vita_runtime.cpp
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
+#include <deque>
+#include <fstream>
 #include <cmath>
 #include <condition_variable>
 #include <cstdio>
@@ -158,6 +161,8 @@ void main()
     gl_ClipDistance[0] = c.w - uClipNear;
     float fog = uFogB.z > 0.5 ? clamp(uFogB.w + uFogC.x / max(c.w, 1e-3), 0.0, 255.0) / 255.0 : 1.0;
     vUV = vec4(aUV + uMisc.zw, c.w, fog * c.w);
+    if (uFogB.z > 1.5) // the background's triangles reach behind the camera: (base + scale / w) x w, linear, so cut ones stay right
+        vUV.w = (uFogB.w * c.w + uFogC.x) / 255.0;
     vColor = aColor / 128.0;
     vColor.a *= uMisc.y;
     if (uMisc.x < -0.5) // water (microcode 1): alpha x (0.2 + 0.8 (1 - |n . v|)) in camera space
@@ -187,7 +192,36 @@ uniform vec4 uFogC;      // scale, lod K, lod scale, max lod (-1: hardware footp
 uniform vec4 uFogColour; // rgb, textured mode
 uniform vec4 uDebug;
 uniform vec4 uAlphaTest; // FB_ONLY enabled, GS byte reference, depth-only phase
+uniform float uGround;   // a ground texture: its repetition broken up
 out vec4 oColor;
+// Hex tiling (Heitz and Neyret 2018; Mikkelsen, "Practical Real-Time Hex-Tiling",
+// JCGT 2022): each vertex of a triangle grid over the texture space reads it
+// at an offset of its own, the three blended by distance and brightness.
+vec2 hexOffset(vec2 v)
+{
+    vec2 p = fract(v * vec2(0.1031, 0.1030));
+    p += dot(p, p.yx + 33.33);
+    return fract(vec2((p.x + p.y) * p.x, (p.x + p.y) * p.y) * vec2(95.43, 97.31));
+}
+vec4 groundTexel(vec2 uv, float lod)
+{
+    vec2 st = mat2(1.0, 0.0, -0.57735027, 1.15470054) * (uv * 3.46410162);
+    vec2 base = floor(st);
+    vec3 f = vec3(fract(st), 0.0);
+    f.z = 1.0 - f.x - f.y;
+    float s = step(0.0, -f.z), s2 = 2.0 * s - 1.0;
+    vec3 w = vec3(-f.z * s2, s - f.y * s2, s - f.x * s2);
+    vec2 a = uv + hexOffset(base + vec2(s, s)), b = uv + hexOffset(base + vec2(s, 1.0 - s)), c = uv + hexOffset(base + vec2(1.0 - s, s));
+    vec2 dx = dFdx(uv), dy = dFdy(uv);
+    vec4 ta = lod < 0.0 ? textureGrad(uTex, a, dx, dy) : textureLod(uTex, a, lod);
+    vec4 tb = lod < 0.0 ? textureGrad(uTex, b, dx, dy) : textureLod(uTex, b, lod);
+    vec4 tc = lod < 0.0 ? textureGrad(uTex, c, dx, dy) : textureLod(uTex, c, lod);
+    const vec3 luma = vec3(0.299, 0.587, 0.114);
+    vec3 k = mix(vec3(1.0), vec3(dot(ta.rgb, luma), dot(tb.rgb, luma), dot(tc.rgb, luma)), 0.6);
+    w = k * pow(max(w, vec3(0.0)), vec3(7.0));
+    w /= max(w.x + w.y + w.z, 1e-5);
+    return ta * w.x + tb * w.y + tc * w.z;
+}
 void main()
 {
     float textured = uFogColour.w;
@@ -229,7 +263,12 @@ void main()
     float lod = uFogC.w > 0.0 ? clamp(log2(max(depth, 1e-3)) * uFogC.z + uFogC.y, 0.0, uFogC.w) : 0.0;
     vec4 t = vec4(vec3(128.0 / 255.0), 1.0); // GS untextured RGB uses vertex / 255
     if (textured > 0.5)
-        t = uFogC.w < 0.0 ? texture(uTex, vUV.xy) : textureLod(uTex, vUV.xy, lod);
+    {
+        if (uGround > 0.5)
+            t = groundTexel(vUV.xy, uFogC.w < 0.0 ? -1.0 : lod);
+        else
+            t = uFogC.w < 0.0 ? texture(uTex, vUV.xy) : textureLod(uTex, vUV.xy, lod);
+    }
     float alpha = clamp(t.a * (textured > 0.5 ? 2.0 : 1.0) * vColor.a, 0.0, 1.0);
     // Alpha TEST precedes the GS's blend-alpha saturation at 0x80. AFAIL
     // FB_ONLY keeps even a low-alpha colour fragment, but not its Z.
@@ -244,7 +283,7 @@ void main()
         return;
     }
     vec3 rgb = clamp(t.rgb * vColor.rgb, 0.0, 1.0);
-    rgb = mix(uFogColour.rgb, rgb, vUV.w / vUV.z);
+    rgb = mix(uFogColour.rgb, rgb, clamp(vUV.w / vUV.z, 0.0, 1.0));
     if (uFogA.w > 0.5)
     {
         float f = clamp((depth - uFogA.x) / uFogA.y, 0.0, 1.0);
@@ -278,6 +317,19 @@ void main()
     const char *kQuadFragment = R"(#version 330 core
 in vec2 vUV;
 uniform sampler2D uSrc, uSrc2, uDepth;
+uniform sampler3D uGrade;  // the colour filter (modes 20 and 22)
+uniform float uGradeHow;   // its share, 0: none
+uniform sampler2D uOverlay, uPrev; // modes 23 and 24
+uniform vec4 uFx[5];       // the ReShade presets' values, see publishShared
+float hash1(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+vec3 toYiq(vec3 c) { return vec3(dot(c, vec3(0.299, 0.587, 0.114)), dot(c, vec3(0.5959, -0.2746, -0.3213)), dot(c, vec3(0.2115, -0.5227, 0.3112))); }
+vec3 fromYiq(vec3 y) { return vec3(y.x + 0.956 * y.y + 0.619 * y.z, y.x - 0.272 * y.y - 0.647 * y.z, y.x - 1.106 * y.y + 1.703 * y.z); }
+vec2 bend(vec2 uv, vec2 k) { uv = uv * 2.0 - 1.0; uv *= vec2(1.0 + uv.y * uv.y * k.x, 1.0 + uv.x * uv.x * k.y); return uv * 0.5 + 0.5; }
+vec4 graded(vec3 c)
+{
+    c = clamp(c, 0.0, 1.0);
+    return vec4(c, 1.0);
+}
 uniform int uMode;
 uniform vec4 uA, uB, uC;
 out vec4 oColor;
@@ -286,6 +338,182 @@ void main()
 {
     if (uMode == 0) // copy
         oColor = vec4(texture(uSrc, vUV).rgb, 1.0);
+    else if (uMode == 20) // the picture's final look: contrast uA.x, saturation uA.y, sharpening uA.z, brightness uA.w
+    {
+        vec2 px = 1.0 / vec2(textureSize(uSrc, 0));
+        vec3 c = texture(uSrc, vUV).rgb;
+        if (uA.z > 0.0)
+        {
+            vec3 around = texture(uSrc, vUV + vec2(px.x, 0.0)).rgb + texture(uSrc, vUV - vec2(px.x, 0.0)).rgb +
+                          texture(uSrc, vUV + vec2(0.0, px.y)).rgb + texture(uSrc, vUV - vec2(0.0, px.y)).rgb;
+            c = clamp(c + (c - around * 0.25) * uA.z, 0.0, 1.0);
+        }
+        c = clamp(c * uA.w, 0.0, 1.0);
+        c = mix(c, c * c * (3.0 - 2.0 * c), uA.x);
+        oColor = graded(mix(vec3(dot(c, vec3(0.299, 0.587, 0.114))), c, uA.y));
+    }
+    else if (uMode == 22) // the PS2 on a television of its time: uB.x how much, uB.y the frame, uSrc2 a small soft copy; then as mode 20
+    {
+        vec2 px = 1.0 / vec2(textureSize(uSrc, 0)), tx = vec2(1.0 / 512.0, 1.0 / 448.0);
+        // The picture's 512 columns, soft across (the video signal), a little down (the interlace).
+        vec3 m = texture(uSrc, vUV).rgb;
+        vec3 x1 = texture(uSrc, vUV + vec2(0.55 * tx.x, 0.0)).rgb + texture(uSrc, vUV - vec2(0.55 * tx.x, 0.0)).rgb;
+        vec3 x2 = texture(uSrc, vUV + vec2(1.15 * tx.x, 0.0)).rgb + texture(uSrc, vUV - vec2(1.15 * tx.x, 0.0)).rgb;
+        vec3 y1 = texture(uSrc, vUV + vec2(0.0, 0.5 * tx.y)).rgb + texture(uSrc, vUV - vec2(0.0, 0.5 * tx.y)).rgb;
+        vec3 soft = (m * 2.0 + x1 * 1.6 + x2 * 0.6 + y1 * 1.1) / 8.6;
+        vec3 c = mix(m, soft, uB.x);
+        if (uA.z > 0.0)
+            c = clamp(c + (c - (x1 + y1) * 0.25) * uA.z, 0.0, 1.0);
+        // The glow of bright parts over dark ones (the tube's glass).
+        vec3 glow = texture(uSrc2, vUV).rgb;
+        c = 1.0 - (1.0 - c) * (1.0 - glow * glow * 0.16 * uB.x);
+        // Fine grain, a PS2 pixel in size, less in the lights.
+        vec2 cell = floor(vUV * vec2(512.0, 448.0));
+        float n = fract(sin(dot(cell + fract(uB.y * 0.61803) * 97.0, vec2(12.9898, 78.233))) * 43758.5453) - 0.5;
+        float l0 = dot(c, vec3(0.299, 0.587, 0.114));
+        c += n * 0.05 * uB.x * (1.0 - 0.6 * l0);
+        c = clamp(c * uA.w, 0.0, 1.0);
+        c = mix(c, c * c * (3.0 - 2.0 * c), uA.x);
+        oColor = graded(mix(vec3(dot(c, vec3(0.299, 0.587, 0.114))), c, uA.y));
+    }
+    else if (uMode == 23) // ReShade presets, colour: uFx[0] sharpen, bloom, curve, saturation; [1] compression, ambient, overlay, vignette; [2] letterbox aspect, wide glow, flare, adaptation; [3].x picture aspect
+    {
+        vec2 px = 1.0 / vec2(textureSize(uSrc, 0));
+        vec3 base = texture(uSrc, vUV).rgb, c = base;
+        if (uFx[0].x > 0.0)
+        {
+            vec3 n = (texture(uSrc, vUV + vec2(px.x, 0.0)).rgb + texture(uSrc, vUV - vec2(px.x, 0.0)).rgb + texture(uSrc, vUV + vec2(0.0, px.y)).rgb +
+                      texture(uSrc, vUV - vec2(0.0, px.y)).rgb) * 0.25;
+            c = clamp(c + clamp((c - n) * uFx[0].x, -0.25, 0.25), 0.0, 1.0);
+        }
+        vec3 soft = texture(uSrc2, vUV).rgb;
+        vec3 b = pow(max(soft, 0.0), vec3(uFx[0].z));
+        b = max(mix(vec3(dot(b, vec3(0.333))), b, uFx[0].w), 0.0);
+        c += b * uFx[0].y;
+        if (uFx[2].y > 0.0) // the light around (AmbientLight)
+        {
+            vec3 w = vec3(0.0);
+            for (int i = 0; i < 8; ++i)
+                w += texture(uSrc2, vUV + 0.12 * vec2(cos(0.785 * float(i)), sin(0.785 * float(i)))).rgb;
+            c += max(w / 8.0 - 0.05, 0.0) * uFx[2].y;
+        }
+        if (uFx[2].z > 0.0) // lens ghosts of the lights
+            for (int i = 1; i <= 3; ++i)
+            {
+                vec2 g = 0.5 + (0.5 - vUV) * (0.35 * float(i));
+                c += max(texture(uSrc2, g).rgb - 0.75, 0.0) * uFx[2].z * 0.33;
+            }
+        if (uFx[1].x > 0.0) // compression of the lights (qUINT)
+        {
+            c = pow(max(c, 0.0), vec3(uFx[1].x));
+            c = pow(c / (1.0 + c), vec3(1.0 / uFx[1].x));
+        }
+        if (uFx[2].w > 0.0) // brightening of dark pictures (EyeAdaption)
+        {
+            float m = 0.0;
+            for (int i = 0; i < 16; ++i)
+                m += dot(textureLod(uSrc2, (vec2(i & 3, i >> 2) + 0.5) / 4.0, 0.0).rgb, vec3(0.299, 0.587, 0.114)) / 16.0;
+            float up = clamp((0.393 - m) * uFx[2].w, 0.0, 0.4), l = dot(c, vec3(0.299, 0.587, 0.114));
+            c += c * (1.0 - clamp(c, 0.0, 1.0)) * up * (l < 0.5 ? mix(0.161, 0.265, l * 2.0) : mix(0.265, 0.771, l * 2.0 - 1.0)) * 4.0;
+        }
+        c = clamp(c, 0.0, 1.0);
+        c = texture(uGrade, (c * 31.0 + 0.5) / 32.0).rgb;
+        c = c + uFx[1].y * (1.0 - c);
+        if (uFx[1].z > 0.0)
+        {
+            vec4 o = texture(uOverlay, vec2(vUV.x, 1.0 - vUV.y));
+            c = mix(c, o.rgb, o.a * uFx[1].z);
+        }
+        if (uFx[1].w > 0.0)
+            c *= 1.0 - smoothstep(0.6, 2.2, length((vUV - 0.5) * 2.0)) * uFx[1].w;
+        c = mix(base, c, uGradeHow);
+        if (uFx[2].x > 0.0 && abs(vUV.y - 0.5) > 0.5 * uFx[3].x / uFx[2].x)
+            c = vec3(0.0);
+        oColor = vec4(c, 1.0);
+    }
+    else if (uMode == 24) // ReShade presets, the tape (VHS Pro, VHS RA): uFx[4] time, film grain, line noise, smear; uFx[3].y pillar width, .z lens
+    {
+        float t = uFx[4].x;
+        vec2 uv = vUV;
+        if (uFx[3].z > 0.0) // the lens (PerfectPerspective)
+        {
+            vec2 q = uv - 0.5;
+            uv = 0.5 + q * (1.0 - uFx[3].z * (0.5 - dot(q, q)));
+        }
+        if (uFx[3].y > 0.0)
+            uv.x = (uv.x - 0.5) / uFx[3].y + 0.5;
+        bool outside = uv.x < 0.0 || uv.x > 1.0;
+        float line = floor(uv.y * 480.0);
+        uv.x += (hash1(vec2(line, floor(t * 30.0))) - 0.5) * 0.425 * 0.004 * uGradeHow; // jitter
+        vec3 y0 = toYiq(texture(uSrc, uv).rgb);
+        vec2 iq = vec2(0.0);
+        float sum = 0.0, luma = 0.0, lsum = 0.0;
+        for (int i = 0; i < 12; ++i) // the colour bleeds to the right, the luma smears a little
+        {
+            float f = float(i), w = exp(-f * 0.28);
+            vec3 q = toYiq(texture(uSrc, uv - vec2((f - 2.0) * 2.3 / 1280.0 * 1.6, 0.0)).rgb);
+            iq += q.yz * w;
+            sum += w;
+            float lw = exp(-f * (3.2 - 5.0 * uFx[4].w));
+            luma += q.x * lw;
+            lsum += lw;
+        }
+        vec3 y = vec3(mix(y0.x, luma / lsum, uFx[4].w), iq / sum);
+        vec2 cell = floor(uv * vec2(640.0, 480.0));
+        y.yz += (vec2(hash1(cell + fract(t) * 61.0), hash1(cell + 17.0 + fract(t) * 43.0)) - 0.5) * 0.05; // signal noise
+        y.x += (hash1(cell + 5.0 + fract(t * 1.7) * 83.0) - 0.5) * (uFx[4].y + 0.012);
+        if (uFx[4].z > 0.0 && hash1(vec2(line, floor(t * 12.0))) > 0.9975) // line noise
+            y.x += uFx[4].z * 0.35 * step(0.6, hash1(vec2(floor(uv.x * 90.0), line + floor(t * 12.0))));
+        vec3 c = clamp(fromYiq(y), 0.0, 1.0);
+        c = mix(texture(uSrc, uv).rgb, c, uGradeHow);
+        vec3 prev = texture(uPrev, vUV).rgb; // what moved leaves a trace
+        c += max(prev - c, 0.0) * vec3(0.857843, 0.0, 0.176615) * 0.408 * 0.553 * uGradeHow;
+        if (outside)
+            c = vec3(0.0);
+        oColor = vec4(clamp(c, 0.0, 1.0), 1.0);
+    }
+    else if (uMode == 25) // ReShade presets, the tube: uFx[3].w 1 Frutbunn, 2 NewPixie, 3 FakeLottes
+    {
+        float kind = uFx[3].w;
+        vec2 uv = bend(vUV, uGradeHow * (kind < 1.5 ? vec2(0.040, 0.0625) : kind < 2.5 ? vec2(0.04, 0.05) : vec2(0.031, 0.041)));
+        vec2 inside = step(vec2(0.0), uv) * step(uv, vec2(1.0));
+        vec3 c = texture(uSrc, uv).rgb;
+        vec2 at = gl_FragCoord.xy;
+        float tv = uv.y * 240.0;
+        if (kind < 1.5)
+        {
+            vec2 o = vec2(0.6 / 640.0, 0.6 / 480.0);
+            c = (c * 2.0 + texture(uSrc, uv + vec2(o.x, 0.0)).rgb + texture(uSrc, uv - vec2(o.x, 0.0)).rgb + texture(uSrc, uv + vec2(0.0, o.y)).rgb + texture(uSrc, uv - vec2(0.0, o.y)).rgb) / 6.0;
+            c *= 0.82 + 0.18 * cos(tv * 6.2831853);
+            vec2 q = uv * (1.0 - uv);
+            c *= clamp(pow(q.x * q.y * 15.0, 0.18), 0.0, 1.0) * 1.12;
+        }
+        else if (kind < 2.5)
+        {
+            c.r = texture(uSrc, uv + vec2(0.0009, 0.0009)).r + 0.02;
+            c.g = texture(uSrc, uv + vec2(0.0, -0.0011)).g + 0.02;
+            c.b = texture(uSrc, uv + vec2(-0.0015, 0.0)).b + 0.02;
+            vec3 halo = texture(uSrc2, uv).rgb;
+            c += 0.10 * halo * halo;
+            c *= vec3(0.95, 1.05, 0.95);
+            vec2 q = uv * (1.0 - uv);
+            c *= 1.3 * pow(clamp(16.0 * q.x * q.y, 0.0, 1.0), 0.3);
+            c *= pow(clamp(0.35 + 0.18 * sin(uv.y * float(textureSize(uSrc, 0).y) * 1.5), 0.0, 1.0), 0.9) * 2.1;
+            c *= 1.0 - 0.23 * clamp(mod(at.x, 3.0) / 2.0, 0.0, 1.0);
+        }
+        else
+        {
+            c = pow(c, vec3(2.5));
+            c *= 0.95 + 0.4 * sin(tv * 6.2831853 + 1.5707963) * 0.5;
+            vec3 mask = vec3(0.5);
+            float m = mod(floor(at.x), 3.0);
+            if (m < 0.5) mask.r = 1.0; else if (m < 1.5) mask.g = 1.0; else mask.b = 1.0;
+            c *= mix(vec3(1.0), mask * 1.35, 0.8);
+            c = pow(max(c, 0.0), vec3(1.0 / 2.2));
+        }
+        c = mix(texture(uSrc, uv).rgb, clamp(c, 0.0, 1.0), uGradeHow);
+        oColor = vec4(c * inside.x * inside.y, 1.0);
+    }
     else if (uMode == 21) // effect detail >= 1 (Metal's reduceBox): each destination pixel the average of its whole footprint; uA.xy its size, uA.z alpha kept
     {
         vec2 foot = vec2(textureSize(uSrc, 0)) / uA.xy;
@@ -630,6 +858,7 @@ float4 main(float4 vUV : TEXCOORD0, uniform sampler2D uSrc, uniform sampler2D uS
         uint64_t bytes = 0;
         bool inHeap = false; // vitaGL put it in the newlib heap (its pools were full)
         uint8_t alphaMin = 0, alphaMax = 255; // bounds over every uploaded mip
+        bool footprint = false; // finer than the game's own: its mip level by the pixel footprint, not the GS's
     };
 
     template <typename GetAlpha>
@@ -671,6 +900,32 @@ float4 main(float4 vUV : TEXCOORD0, uniform sampler2D uSrc, uniform sampler2D uS
         uint32_t width = 0, height = 0;
     };
 
+#if !defined(PS2X_NATIVE_VITA)
+    // Shared present (after PR 8 by felipmz): the render thread copies a
+    // finished frame into a texture of its own and publishes it with a fence;
+    // the window's context (sharing objects) waits on the GPU and draws it.
+    struct SharedPresent
+    {
+        static constexpr size_t kSlots = 4; // shown, newest, the one before it unread, being drawn
+        struct Frame
+        {
+            size_t slot = 0;
+            uint32_t width = 0, height = 0;
+            uint64_t revision = 0;
+            GLsync ready = nullptr; // the render thread's copy into it is done
+        };
+        std::mutex mutex;
+        std::atomic<bool> on{false}, presenting{false}; // presenting: the window has had one
+        std::deque<Frame> queue;          // finished and not shown yet, oldest first
+        GLuint texture[kSlots] = {};
+        GLsync released[kSlots] = {};     // the window's last draw of it is done
+        int shown = -1;                   // the window's
+        Frame shownFrame;
+        uint64_t revision = 0;
+    };
+    SharedPresent g_shared;
+#endif
+
     struct Renderer
     {
         GLuint mainProgram = 0, quadProgram = 0;
@@ -708,6 +963,16 @@ float4 main(float4 vUV : TEXCOORD0, uniform sampler2D uSrc, uniform sampler2D uS
         Target prefix[3], hazeSmall[3]; // one reduced haze source per bounded prefix slot
         Target shownFrame[2]; // what the host shows, alternately (the GPU draws later: never the target being drawn)
         int shownIndex = 0;
+        GLuint gradeTexture[2] = {}; // the colour filter's and the television's tables
+        int gradeLoaded[2] = {};
+        Target fxTarget[4];       // the presets' stages and the tape's last picture
+        Target lookSmall[2];     // the PS2 look's soft copy
+        float groundSent = 0.0f; // mainProgram's uGround
+#if !defined(PS2X_NATIVE_VITA)
+        Target sharedTarget[SharedPresent::kSlots]; // remade on its own, while free, when the size changes
+        GLsync sharedPace[2] = {};                  // the GPU's end of the last two frames
+        bool publishShared(uint32_t w, uint32_t h);
+#endif
         Target glowLayer, glowSmall[4]; // bossDeathEffect: layer 8 apart (on the picture's depth); 256, 128, 64, 64
         Target bloomTex[3];
         bool bloomHistory = false;
@@ -982,6 +1247,8 @@ float4 main(float4 vUV : TEXCOORD0, uniform sampler2D uSrc, uniform sampler2D uS
             } kind = MeshKind;
             uint64_t id = 0;
             uint32_t count = 0, width = 0, height = 0, levels = 1;
+            bool compressed = false; // a texture in BC7 blocks
+            uint8_t alphaMin = 0, alphaMax = 255;
             std::vector<uint8_t> bytes; // vertices, or the texture's levels
             std::vector<uint32_t> indices;
         };
@@ -999,6 +1266,9 @@ float4 main(float4 vUV : TEXCOORD0, uniform sampler2D uSrc, uniform sampler2D uS
         void uploadMesh(uint64_t id, const native_renderer::Vertex *vertices, uint32_t count);
         void uploadSkinned(uint64_t id, const native_renderer::SkinVertex *vertices, uint32_t count, const uint32_t *indices, uint32_t indexCount);
         void uploadTexture(uint64_t id, uint32_t width, uint32_t height, const uint8_t *rgba, uint32_t levels);
+#if !defined(PS2X_NATIVE_VITA)
+        void uploadCompressed(const Upload &u);
+#endif
         // What the last frame drawn cost (the render thread's): read at the next hand-over.
         struct
         {
@@ -1148,6 +1418,7 @@ float4 main(float4 vUV : TEXCOORD0, uniform sampler2D uSrc, uniform sampler2D uS
                 glUseProgram(quadProgram);
                 glUniform1i(uniform(false, "uSrc"), 0);
                 glUniform1i(uniform(false, "uSrc2"), 1);
+            glUniform1i(uniform(false, "uGrade"), 4);
             }
             quadProgram = quadPrograms[0];
 #else
@@ -1199,6 +1470,7 @@ float4 main(float4 vUV : TEXCOORD0, uniform sampler2D uSrc, uniform sampler2D uS
             glUseProgram(quadProgram);
             glUniform1i(uniform(false, "uSrc"), 0);
             glUniform1i(uniform(false, "uSrc2"), 1);
+            glUniform1i(uniform(false, "uGrade"), 4);
             glUniform1i(uniform(false, "uDepth"), 2);
 #if defined(PS2X_NATIVE_VITA)
             probeEmulator();
@@ -1941,6 +2213,48 @@ float4 main(float4 vUV : TEXCOORD0, uniform sampler2D uSrc, uniform sampler2D uS
         cache.texture = ~0u;
     }
 
+#if !defined(PS2X_NATIVE_VITA)
+    void Renderer::uploadCompressed(const Upload &u)
+    {
+        Texture &t = textures[u.id];
+        forget(t);
+        ++texStats.uploads;
+        t.used = arenaFrame;
+        t.bytes = u.bytes.size();
+        if (!t.name)
+            glGenTextures(1, &t.name);
+        t.alphaMin = u.alphaMin;
+        t.alphaMax = u.alphaMax;
+        t.footprint = true;
+        glBindTexture(GL_TEXTURE_2D, t.name);
+        const uint8_t *blocks = u.bytes.data();
+        for (uint32_t level = 0, w = u.width, h = u.height; level < u.levels; ++level)
+        {
+            const size_t size = static_cast<size_t>((w + 3u) / 4u) * ((h + 3u) / 4u) * 16u;
+            glCompressedTexImage2D(GL_TEXTURE_2D, static_cast<GLint>(level), 0x8E8C /* GL_COMPRESSED_RGBA_BPTC_UNORM */, static_cast<GLsizei>(w),
+                                   static_cast<GLsizei>(h), 0, static_cast<GLsizei>(size), blocks);
+            if (const GLenum e = glGetError(); e != GL_NO_ERROR)
+            {
+                ++texStats.errors;
+                texStats.lastError = e;
+            }
+            blocks += size;
+            w = std::max(1u, w / 2u);
+            h = std::max(1u, h / 2u);
+        }
+        textureBytes += t.bytes;
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, static_cast<GLint>(u.levels - 1u));
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, u.levels > 1u ? GL_LINEAR_MIPMAP_LINEAR : GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+        t.clamp = 0;
+        t.filter = t.filter >= 3u ? ~0u : 2u;
+        t.levels = u.levels;
+        cache.texture = ~0u;
+    }
+#endif
+
     void Renderer::applyUploadList(std::vector<Upload> &list)
     {
         for (const Upload &u : list)
@@ -1955,6 +2269,13 @@ float4 main(float4 vUV : TEXCOORD0, uniform sampler2D uSrc, uniform sampler2D uS
                               static_cast<uint32_t>(u.indices.size()));
                 break;
             case Upload::TextureKind:
+#if !defined(PS2X_NATIVE_VITA)
+                if (u.compressed)
+                {
+                    uploadCompressed(u);
+                    break;
+                }
+#endif
                 uploadTexture(u.id, u.width, u.height, u.bytes.data(), u.levels);
                 break;
             }
@@ -2152,19 +2473,31 @@ float4 main(float4 vUV : TEXCOORD0, uniform sampler2D uSrc, uniform sampler2D uS
             if (cutBackground)
                 glEnable(GL_CLIP_DISTANCE0);
 #endif
-            const float *domeClip = nullptr; // background pass: the dome's transform, while only it was drawn
-            bool domePrefix = true;
+            // Background pass: how many of the layer's first draws are the sky
+            // dome's (its own surfaces without vertex fog among them; all with
+            // its matrix, when scenery with another one follows).
+            uint32_t domeDraws = 0, backgroundSeen = 0;
             if (backgroundOnly)
             {
-                // Only when the layer has scenery with another matrix after it.
-                const Draw *first = nullptr, *last = nullptr;
+                const Draw *first = nullptr;
+                uint32_t n = 0, same = 0, lastUnfogged = 0;
+                bool prefix = true;
                 for (const uint64_t key : drawOrder)
-                    if (const Draw &b = draws[static_cast<size_t>(key & 0xFFFFFFFFu)]; b.state.background && !b.state.reflectionSource)
-                    {
-                        if (!first) first = &b;
-                        last = &b;
-                    }
-                domePrefix = first && std::memcmp(first->clip, last->clip, sizeof(first->clip)) != 0;
+                {
+                    const Draw &b = draws[static_cast<size_t>(key & 0xFFFFFFFFu)];
+                    if (!b.state.background || b.state.reflectionSource)
+                        continue;
+                    if (!first)
+                        first = &b;
+                    ++n;
+                    prefix = prefix && std::memcmp(b.clip, first->clip, sizeof(b.clip)) == 0;
+                    if (!prefix)
+                        continue;
+                    same = n;
+                    if (b.state.noVertexFog)
+                        lastUnfogged = n;
+                }
+                domeDraws = !lastUnfogged ? 0u : same < n ? same : lastUnfogged;
             }
             uint32_t shadowOrder = 0;
             float shadowAmount = 0.0f;
@@ -2203,6 +2536,7 @@ float4 main(float4 vUV : TEXCOORD0, uniform sampler2D uSrc, uniform sampler2D uS
                     continue;
                 if (mirror != d.state.reflectionSource)
                     continue;
+                const uint32_t domeDraw = backgroundOnly ? backgroundSeen++ : 0u;
                 if (d.state.reflectionSample && !haveMirror)
                     continue;
                 if (!backgroundOnly && fogOn && d.state.background)
@@ -2340,16 +2674,16 @@ float4 main(float4 vUV : TEXCOORD0, uniform sampler2D uSrc, uniform sampler2D uS
 #if !defined(PS2X_NATIVE_VITA)
                 if (cutBackground && boundProgram == mainProgram)
                     glUniform1f(uniform(true, "uClipNear"), fog.backgroundNear);
+                if (boundProgram == mainProgram)
+                {
+                    const float ground = d.state.ground && !(d.state.clamp & 3u) && native_renderer::tuning().groundVariation ? 1.0f : 0.0f;
+                    if (ground != groundSent)
+                        glUniform1f(uniform(true, "uGround"), groundSent = ground);
+                }
 #endif
                 // The sky dome is the layer's first model, some 40000 units away (the landscape ends near 3500): drawn in
                 // order behind everything, as depth cannot tell its own layers apart that far (hatching).
-                if (backgroundOnly && d.state.background && domePrefix)
-                {
-                    if (!domeClip)
-                        domeClip = d.clip;
-                    domePrefix = std::memcmp(d.clip, domeClip, sizeof(d.clip)) == 0;
-                }
-                const bool backgroundDepth = backgroundOnly && !bgDepthOff && d.state.background && !d.state.screen && !domePrefix;
+                const bool backgroundDepth = backgroundOnly && !bgDepthOff && d.state.background && !d.state.screen && domeDraw >= domeDraws;
                 const int depthTest = backdrop && !backgroundDepth && !d.state.screenDepthTest ? 0 : 1;
                 const int depthMask = backgroundDepth ? (d.state.blend == native_renderer::Blend::Additive || d.state.noDepthWrite ? 0 : 1)
                                       : d.state.screenDepthTest ? 0
@@ -2419,6 +2753,13 @@ float4 main(float4 vUV : TEXCOORD0, uniform sampler2D uSrc, uniform sampler2D uS
                             filter = 2u;
                     }
 #endif
+#if !defined(PS2X_NATIVE_VITA)
+                    if (tex->second.footprint)
+                    {
+                        maxLod = -1.0f;
+                        filter = d.state.screen ? 2u : frameFilter >= 3u && maxAnisotropy < 2.0f ? 2u : frameFilter;
+                    }
+#endif
                     if (tex->second.filter != filter)
                     {
                         tex->second.filter = filter;
@@ -2446,7 +2787,7 @@ float4 main(float4 vUV : TEXCOORD0, uniform sampler2D uSrc, uniform sampler2D uS
                 const bool zFogged = false;
 #endif
                 const float fogA[4] = {fog.start, fog.width, static_cast<float>(fog.steps), (!backgroundOnly && fogOn && (d.state.fogged || zFogged)) ? 1.0f : 0.0f};
-                const float fogB[4] = {static_cast<float>(w), static_cast<float>(h), vertexFog ? 1.0f : 0.0f, fog.base};
+                const float fogB[4] = {static_cast<float>(w), static_cast<float>(h), vertexFog ? (backgroundOnly ? 2.0f : 1.0f) : 0.0f, fog.base};
                 // The mirror's ripple (t, H) where a reflection reads no mip level.
                 const float fogC[4] = {fog.scale, d.state.reflectionSample ? d.state.mirrorRipple[0] : d.state.lodK,
                                        d.state.reflectionSample ? d.state.mirrorRipple[1] : d.state.lodScale, d.state.reflectionSample ? 0.0f : maxLod};
@@ -2754,10 +3095,17 @@ float4 main(float4 vUV : TEXCOORD0, uniform sampler2D uSrc, uniform sampler2D uS
                 glDrawArrays(GL_TRIANGLES, 0, 3);
             }
             glDisable(GL_STENCIL_TEST);
+            const float amountNow[4] = {softAmount, 0, 0, 0};
             bindTexture(0, shadowMask.texture);
+            if (native_renderer::tuning().shadowDetail > 1.5f) // the mask itself
+            {
+                quad(color, 9, QuadBlend::Darken, amountNow);
+                return;
+            }
             quad(bloomTex[0], 7, QuadBlend::None);
             static const int rounds = std::getenv("SOTC_SHADOW_BLUR") ? std::atoi(std::getenv("SOTC_SHADOW_BLUR")) : 1;
-            blur(rounds);
+            if (native_renderer::tuning().shadowDetail < 0.5f)
+                blur(rounds);
             const float amount[4] = {softAmount, 0, 0, 0};
             bindTexture(0, bloomTex[0].texture);
             quad(color, 9, QuadBlend::Darken, amount);
@@ -3093,6 +3441,10 @@ float4 main(float4 vUV : TEXCOORD0, uniform sampler2D uSrc, uniform sampler2D uS
                 stats.presentUs += native_renderer::nowUs() - start;
             return;
         }
+#if !defined(PS2X_NATIVE_VITA)
+        if (g_shared.on.load(std::memory_order_relaxed) && publishShared(w, h))
+            return;
+#endif
         // Read back, top row first (the GL picture is y-up).
         std::vector<uint8_t> pixels(static_cast<size_t>(w) * h * 4u);
         glBindFramebuffer(GL_FRAMEBUFFER, color.fbo);
@@ -3108,6 +3460,223 @@ float4 main(float4 vUV : TEXCOORD0, uniform sampler2D uSrc, uniform sampler2D uS
         output.height = h;
         ++output.revision;
     }
+
+#if !defined(PS2X_NATIVE_VITA)
+    bool Renderer::publishShared(uint32_t w, uint32_t h)
+    {
+        size_t slot = SharedPresent::kSlots;
+        GLsync released = nullptr;
+        {
+            std::lock_guard<std::mutex> lock(g_shared.mutex);
+            for (size_t i = 0; i < SharedPresent::kSlots && slot == SharedPresent::kSlots; ++i)
+                if (static_cast<int>(i) != g_shared.shown &&
+                    std::none_of(g_shared.queue.begin(), g_shared.queue.end(), [i](const auto &f) { return f.slot == i; }))
+                    slot = i;
+            if (slot == SharedPresent::kSlots)
+                return false;
+            std::swap(released, g_shared.released[slot]);
+        }
+        if (released)
+        {
+            glWaitSync(released, 0, GL_TIMEOUT_IGNORED); // the window's draw of it comes first, on the GPU
+            glDeleteSync(released);
+        }
+        Target &out = sharedTarget[slot];
+        if (out.width != w || out.height != h || !out.texture)
+        {
+            const bool made = makeTarget(out, w, h, false);
+            boundFbo = boundProgram = ~0u;
+            if (!made)
+            {
+                destroyTarget(out);
+                return false; // this frame is read back
+            }
+        }
+        const native_renderer::Tuning &look = native_renderer::tuning();
+        // Over the picture's own look: a colour filter and a television, after
+        // Sad Origami's ReShade presets (their values and tables).
+        struct Overlook
+        {
+            const char *table;
+            float fx[12]; // as mode 23's uFx[0..2]
+            float pillar, lens, tube, grain, lines, smear;
+        };
+        static const Overlook colours[] = {
+            {"olive", {0.8f, 0.14f, 1.4f, 2.5f, 4.0f, 0.03f, 0, 0, 0, 0, 0, 0}, 0, 0, 0, 0, 0, 0},
+            {"mortar", {1.0f, 0.16f, 1.4f, 1.0f, 3.0f, 0.03f, 0, 0, 0, 0, 0.25f, 0}, 0, 0, 0, 0, 0, 0},
+            {"scarlet-natural", {0.63f, 0.22f, 0.6f, 1.4f, 1.8f, 0, 0, 0.6f, 0, 0.10f, 0, 0}, 0, 0, 0, 0, 0, 0},
+            {"scarlet-intense", {0.63f, 0.22f, 0.6f, 1.4f, 1.8f, 0, 0, 0.6f, 0, 0.10f, 0, 0}, 0, 0, 0, 0, 0, 0},
+        };
+        static const Overlook televisions[] = {
+            {"cathode", {0, 0.12f, 1.6f, 1.0f, 0, 0, 0, 0, 0, 0, 0, 1.125f}, 0, 0, 1, 0.01f, 0, 0.4f},
+            {"cathode", {0, 0.12f, 1.6f, 1.0f, 0, 0, 0, 0, 0, 0, 0, 1.125f}, 0, 0, 2, 0.01f, 0, 0.4f},
+            {"cathode", {0, 0.12f, 1.6f, 1.0f, 0, 0, 0, 0, 0, 0, 0, 1.125f}, 0, 0, 3, 0.01f, 0, 0.4f},
+            {"handycam", {0.64f, 0.12f, 1.6f, 1.0f, 0, 0, 0, 0, 0, 0, 0, 1.125f}, 0.83f, 0.10f, 0, 0, 0.81f, 0.5f},
+        };
+        const int wantedTable[2] = {std::clamp(static_cast<int>(look.colourFilter + 0.5f), 0, 4), std::clamp(static_cast<int>(look.tvFilter + 0.5f), 0, 4)};
+        for (int t = 0; t < 2; ++t)
+        {
+            if (wantedTable[t] == gradeLoaded[t])
+                continue;
+            gradeLoaded[t] = wantedTable[t];
+            if (gradeTexture[t])
+                glDeleteTextures(1, &gradeTexture[t]);
+            gradeTexture[t] = 0;
+            if (!wantedTable[t])
+                continue;
+            std::vector<char> table(32u * 32u * 32u * 3u);
+            const char *name = (t ? televisions : colours)[wantedTable[t] - 1].table;
+            if (std::ifstream file(std::string("filters/") + name + ".lut", std::ios::binary); file.read(table.data(), static_cast<std::streamsize>(table.size())))
+            {
+                glActiveTexture(GL_TEXTURE0 + 4);
+                glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+                glGenTextures(1, &gradeTexture[t]);
+                glBindTexture(GL_TEXTURE_3D, gradeTexture[t]);
+                glTexImage3D(GL_TEXTURE_3D, 0, GL_RGB8, 32, 32, 32, 0, GL_RGB, GL_UNSIGNED_BYTE, table.data());
+                for (const GLenum q : {GL_TEXTURE_MIN_FILTER, GL_TEXTURE_MAG_FILTER})
+                    glTexParameteri(GL_TEXTURE_3D, q, GL_LINEAR);
+                for (const GLenum q : {GL_TEXTURE_WRAP_S, GL_TEXTURE_WRAP_T, GL_TEXTURE_WRAP_R})
+                    glTexParameteri(GL_TEXTURE_3D, q, GL_CLAMP_TO_EDGE);
+                glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+                glActiveTexture(GL_TEXTURE0);
+            }
+            boundFbo = boundProgram = ~0u;
+        }
+        bool colouring = gradeTexture[0] != 0 && look.filterStrength > 0.0f, television = gradeTexture[1] != 0 && look.tvStrength > 0.0f;
+        if (colouring || television)
+        {
+            bool made = true;
+            for (Target &t : lookSmall)
+                if (!t.texture)
+                    made = makeTarget(t, 128u, 112u, false) && made;
+            for (Target &t : fxTarget)
+                if (t.width != w || t.height != h || !t.texture)
+                    made = makeTarget(t, w, h, false) && made;
+            boundFbo = boundProgram = ~0u;
+            colouring = colouring && made;
+            television = television && made;
+        }
+        // The picture's own look, then the preset over it.
+        const auto ownLook = [&](const Target &to)
+        {
+        if (look.ps2Look > 0.0f)
+        {
+            bool ready = true;
+            for (Target &t : lookSmall)
+                if (!t.texture)
+                    ready = makeTarget(t, 128u, 112u, false) && ready;
+            boundFbo = boundProgram = ~0u;
+            if (ready)
+            {
+                copy(colorPlain, lookSmall[0]);
+                const float across[4] = {1.6f / 128.0f, 0, 0, 0}, down[4] = {0, 1.6f / 112.0f, 0, 0};
+                for (int i = 0; i < 2; ++i)
+                {
+                    bindTexture(0, lookSmall[0].texture);
+                    quad(lookSmall[1], 1, QuadBlend::None, across);
+                    bindTexture(0, lookSmall[1].texture);
+                    quad(lookSmall[0], 1, QuadBlend::None, down);
+                }
+            }
+            const float grade[4] = {look.contrast, look.saturation, look.sharpen, look.brightness};
+            const float how[4] = {look.ps2Look, static_cast<float>(arenaFrame % 512u), 0, 0};
+            bindTexture(1, lookSmall[0].texture);
+            bindTexture(0, colorPlain.texture);
+            quad(to, 22, QuadBlend::None, grade, how);
+        }
+        else if (look.contrast != 0.0f || look.saturation != 1.0f || look.sharpen != 0.0f || look.brightness != 1.0f)
+        {
+            const float grade[4] = {look.contrast, look.saturation, look.sharpen, look.brightness};
+            bindTexture(0, colorPlain.texture);
+            quad(to, 20, QuadBlend::None, grade);
+        }
+        else
+            copy(colorPlain, to); // colour only, alpha 1
+        };
+        if (colouring || television)
+        {
+            const auto stage = [&](int mode, const Overlook &p, float share, GLuint table, const Target &from, const Target &to)
+            {
+                float fx[20] = {};
+                std::memcpy(fx, p.fx, sizeof(p.fx));
+                fx[12] = 1.6f;
+                fx[13] = p.pillar > 0.0f ? 1.0f + (p.pillar - 1.0f) * share : 0.0f, fx[14] = p.lens * share, fx[15] = p.tube;
+                fx[16] = static_cast<float>(arenaFrame % 36000u) / 60.0f, fx[17] = p.grain, fx[18] = p.lines, fx[19] = p.smear;
+                useQuad(mode);
+                glUniform1i(uniform(false, "uGrade"), 4);
+                glUniform1i(uniform(false, "uOverlay"), 5);
+                glUniform1i(uniform(false, "uPrev"), 6);
+                glUniform1f(uniform(false, "uGradeHow"), share);
+                glUniform4fv(uniform(false, "uFx"), 5, fx);
+                bindTexture(6, fxTarget[2].texture);
+                glActiveTexture(GL_TEXTURE0 + 4);
+                glBindTexture(GL_TEXTURE_3D, table);
+                bindTexture(1, lookSmall[0].texture);
+                bindTexture(0, from.texture);
+                quad(to, mode, QuadBlend::None);
+            };
+            const auto soften = [&](const Target &from)
+            {
+                copy(from, lookSmall[0]);
+                const float across[4] = {1.6f / 128.0f, 0, 0, 0}, down[4] = {0, 1.6f / 112.0f, 0, 0};
+                for (int i = 0; i < 2; ++i)
+                {
+                    bindTexture(0, lookSmall[0].texture);
+                    quad(lookSmall[1], 1, QuadBlend::None, across);
+                    bindTexture(0, lookSmall[1].texture);
+                    quad(lookSmall[0], 1, QuadBlend::None, down);
+                }
+            };
+            ownLook(fxTarget[3]);
+            const Target *now = &fxTarget[3];
+            if (colouring)
+            {
+                const Target &to = television ? fxTarget[0] : out;
+                soften(*now);
+                stage(23, colours[wantedTable[0] - 1], look.filterStrength, gradeTexture[0], *now, to);
+                now = &to;
+            }
+            if (television)
+            {
+                const Overlook &p = televisions[wantedTable[1] - 1];
+                const Target &taped = p.tube > 0.0f ? fxTarget[0] : out;
+                soften(*now);
+                stage(23, p, look.tvStrength, gradeTexture[1], *now, fxTarget[1]);
+                stage(24, p, look.tvStrength, gradeTexture[1], fxTarget[1], taped);
+                copy(taped, fxTarget[2]);
+                if (p.tube > 0.0f)
+                    stage(25, p, look.tvStrength, gradeTexture[1], fxTarget[0], out);
+            }
+        }
+        else
+            ownLook(out);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        boundFbo = boundProgram = ~0u;
+        GLsync ready = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+        GLsync pace = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+        glFlush(); // the fence must reach the GPU for the window's context to wait on it
+        {
+            std::lock_guard<std::mutex> lock(g_shared.mutex);
+            g_shared.texture[slot] = out.texture;
+            if (g_shared.queue.size() >= 2u) // the window fell behind: the oldest unread one goes
+            {
+                glDeleteSync(g_shared.queue.front().ready);
+                g_shared.queue.pop_front();
+            }
+            g_shared.queue.push_back({slot, w, h, ++g_shared.revision, ready});
+        }
+        // The read back used to wait for the GPU: without it the CPU may be
+        // one frame ahead, not more (latency).
+        if (sharedPace[0])
+        {
+            glClientWaitSync(sharedPace[0], GL_SYNC_FLUSH_COMMANDS_BIT, 100000000ull);
+            glDeleteSync(sharedPace[0]);
+        }
+        sharedPace[0] = sharedPace[1];
+        sharedPace[1] = pace;
+        return true;
+    }
+#endif
 
     // The game thread's side of the renderer (every Backend call) and the
     // render thread. The game thread records a frame (its draws, per-frame
@@ -3287,6 +3856,23 @@ float4 main(float4 vUV : TEXCOORD0, uniform sampler2D uSrc, uniform sampler2D uS
             m_knownTextures.insert(key);
             flushIfLarge();
         }
+#if !defined(PS2X_NATIVE_VITA)
+        void uploadCompressed(uint64_t key, uint32_t width, uint32_t height, const uint8_t *blocks, size_t bytes, uint32_t levels,
+                              uint8_t alphaMin, uint8_t alphaMax) override
+        {
+            Renderer::Upload *u = width && height && levels ? queue(Renderer::Upload::TextureKind, key, 0u, blocks, bytes) : nullptr;
+            if (!u)
+                return;
+            u->width = width;
+            u->height = height;
+            u->levels = levels;
+            u->compressed = true;
+            u->alphaMin = alphaMin;
+            u->alphaMax = alphaMax;
+            m_knownTextures.insert(key);
+            flushIfLarge();
+        }
+#endif
         void beginFrame() override { clearFrame(); }
         void draw(uint64_t mesh, const float clip[16], const native_renderer::DrawState &state) override { m_rec.draws.emplace_back(mesh, clip, state); }
         void setFog(const native_renderer::Fog &fog) override { m_rec.fog = fog; }
@@ -3873,6 +4459,76 @@ namespace native_renderer::detail
             return nullptr; // its thread has ended; the renderer is left as it is
         return backend;
     }
+}
+
+namespace native_renderer
+{
+#if !defined(PS2X_NATIVE_VITA)
+    void setSharedPresent(bool on)
+    {
+        if (g_shared.on.exchange(on, std::memory_order_relaxed) == on || on)
+            return;
+        // Off: what is waiting or shown gets old; the next one on starts anew.
+        std::lock_guard<std::mutex> lock(g_shared.mutex);
+        for (auto &frame : g_shared.queue)
+            glDeleteSync(frame.ready);
+        g_shared.queue.clear();
+        g_shared.shown = -1;
+        g_shared.presenting.store(false, std::memory_order_relaxed);
+    }
+
+    FrameRead sharedFrame(uint32_t &texture, uint32_t &width, uint32_t &height, uint64_t &revision)
+    {
+        FrameRead read = FrameRead::Unchanged;
+        std::lock_guard<std::mutex> lock(g_shared.mutex);
+        if (!g_shared.queue.empty())
+        {
+            if (g_shared.shown >= 0)
+            {
+                // All the window drew so far, the old frame included, before
+                // the render thread draws into it again.
+                GLsync &released = g_shared.released[g_shared.shown];
+                if (released)
+                    glDeleteSync(released);
+                released = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+                glFlush();
+            }
+            g_shared.shownFrame = g_shared.queue.front();
+            g_shared.queue.pop_front();
+            g_shared.shown = static_cast<int>(g_shared.shownFrame.slot);
+            glWaitSync(g_shared.shownFrame.ready, 0, GL_TIMEOUT_IGNORED); // on the GPU: the CPU goes on
+            glDeleteSync(g_shared.shownFrame.ready);
+            g_shared.shownFrame.ready = nullptr;
+            g_shared.presenting.store(true, std::memory_order_relaxed);
+            read = FrameRead::Updated;
+        }
+        if (g_shared.shown < 0)
+            return FrameRead::Missing;
+        texture = g_shared.texture[g_shared.shown];
+        width = g_shared.shownFrame.width;
+        height = g_shared.shownFrame.height;
+        revision = g_shared.shownFrame.revision;
+        return read;
+    }
+
+    bool sharedPresenting()
+    {
+        return g_shared.on.load(std::memory_order_relaxed) && g_shared.presenting.load(std::memory_order_relaxed);
+    }
+#else
+    void setSharedPresent(bool) {}
+    FrameRead sharedFrame(uint32_t &, uint32_t &, uint32_t &, uint64_t &) { return FrameRead::Missing; }
+    bool sharedPresenting() { return false; }
+#endif
+}
+
+#else
+
+namespace native_renderer
+{
+    void setSharedPresent(bool) {}
+    FrameRead sharedFrame(uint32_t &, uint32_t &, uint32_t &, uint64_t &) { return FrameRead::Missing; }
+    bool sharedPresenting() { return false; }
 }
 
 #endif

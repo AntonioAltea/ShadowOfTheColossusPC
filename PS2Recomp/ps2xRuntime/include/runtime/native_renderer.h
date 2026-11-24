@@ -192,6 +192,11 @@ namespace native_renderer
     // `levels` mip levels, each half the last, one after the other in `rgba`.
     void uploadTexture(uint64_t id, uint32_t width, uint32_t height, const uint8_t *rgba, uint32_t levels = 1);
 
+    // The same from BC7 blocks (OpenGL; elsewhere nothing happens), `bytes` in
+    // all, alphas from alphaMin to alphaMax. Mip levels by the pixel footprint.
+    void uploadCompressed(uint64_t id, uint32_t width, uint32_t height, const uint8_t *blocks, size_t bytes, uint32_t levels,
+                          uint8_t alphaMin, uint8_t alphaMax);
+
     // Work off the game thread (tuning().asyncBuilds, Debug "Builds on a
     // worker"): `work` runs on a worker thread (it holds copies of what it
     // reads: no game memory, no renderer calls), `finish` on the game thread
@@ -260,6 +265,7 @@ namespace native_renderer
         // of a later layer the pixels with a non-zero count are darkened by
         // `shadow` (0..1).
         bool shadowVolume = false;
+        bool ground = false;      // a ground texture that repeats (Tuning::groundVariation)
         bool noVertexFog = false; // the GS PRIM has FGE off (SotC: the dome of clouds)
         float shadow = 0.5f;
         // Planar reflections: reflectionSource draws (the game's mirrored
@@ -383,6 +389,16 @@ namespace native_renderer
     enum class FrameRead { Missing, Unchanged, Updated };
     // A presentation consumer owns its own revision, initially zero.
     FrameRead readFrame(std::vector<uint8_t> &rgba, uint32_t &width, uint32_t &height, uint64_t &revision);
+    // Desktop OpenGL, with the renderer's context sharing objects with the
+    // window's: finished frames are handed over as textures and GPU fences,
+    // without a read back to memory (readFrame and latestFrame then have
+    // nothing new). Window thread; takes effect with the next finished frame.
+    void setSharedPresent(bool on);
+    // Window thread: the next finished frame's texture (y-up); the one before
+    // stays valid until then. Frames come in order, at most one kept waiting.
+    FrameRead sharedFrame(uint32_t &texture, uint32_t &width, uint32_t &height, uint64_t &revision);
+    // Frames are being handed over this way (any thread).
+    bool sharedPresenting();
 
     // The frame timing log (Debug 'Frame timing log', SOTC_FRAME_LOG): what
     // one game frame spent where, filled by the frontend, the backends and the

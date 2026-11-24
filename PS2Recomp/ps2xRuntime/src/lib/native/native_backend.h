@@ -106,6 +106,7 @@ namespace native_renderer::detail
         virtual void rewriteFramePalette(uint32_t, const float *, uint32_t) {}
         virtual bool hasTexture(uint64_t id) = 0;
         virtual void uploadTexture(uint64_t id, uint32_t width, uint32_t height, const uint8_t *rgba, uint32_t levels) = 0;
+        virtual void uploadCompressed(uint64_t, uint32_t, uint32_t, const uint8_t *, size_t, uint32_t, uint8_t, uint8_t) {}
         virtual void beginFrame() = 0;
         virtual void draw(uint64_t mesh, const float clip[16], const DrawState &state) = 0;
         virtual void setFog(const Fog &fog) = 0;

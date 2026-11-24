@@ -200,6 +200,7 @@ void ps2pad::pollGamepads()
 
 void ps2pad::resetAfterStateLoad()
 {
+    PSPadBackend::setRumble(false, 0.0f);
     std::lock_guard<std::mutex> lock(gamepadMutex);
     stateReleaseGate = true;
 }

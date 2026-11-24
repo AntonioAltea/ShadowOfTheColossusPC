@@ -3400,6 +3400,20 @@ PresentationFrame GSCpuBackend::Present(const GSPresentationRequest &request)
         const uint64_t dispfb = first ? request.dispfb1 : request.dispfb2, display = first ? request.display1 : request.display2;
         uint32_t width = 0u, height = 0u;
         decodeDisplaySize(display, width, height);
+        if (native_renderer::sharedPresenting() && (pmode.enableCrt1 || pmode.enableCrt2) && width && height &&
+            width <= kHostFrameWidth && height <= kHostFrameHeight)
+        {
+            // The picture goes from the renderer to the window on the GPU:
+            // only this frame's size and place (its pixels black, not shown).
+            PresentationFrame frame;
+            frame.width = width;
+            frame.height = height;
+            frame.displayFbp = decodeDisplayFrame(dispfb).fbp;
+            frame.sourceFbp = frame.displayFbp;
+            frame.vsyncTick = request.vsyncTick;
+            frame.pixels.assign(static_cast<size_t>(kHostFrameWidth) * kHostFrameHeight * 4u, 0u);
+            return frame;
+        }
         thread_local std::vector<uint8_t> native;
         uint32_t nw = 0, nh = 0;
         if ((pmode.enableCrt1 || pmode.enableCrt2) && width && height && width <= kHostFrameWidth && height <= kHostFrameHeight &&

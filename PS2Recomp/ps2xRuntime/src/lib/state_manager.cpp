@@ -30,7 +30,7 @@ void request(Action action, int slot)
     std::lock_guard<std::mutex> lock(mutex);
     if (!active || slot < 0 || slot >= SlotCount || queued || working) return;
     pending = action; selected = slot; queued = true;
-    message = action == Action::Save ? "Salvando estado…" : action == Action::Load ? "Carregando estado…" : "Removendo estado…";
+    message = action == Action::Save && slot >= AutoSlot ? "" : action == Action::Save ? "Salvando estado…" : action == Action::Load ? "Carregando estado…" : "Removendo estado…";
     active->eeScheduler().notifyStateRequest();
 }
 bool busy() { std::lock_guard<std::mutex> lock(mutex); return queued || working; }

@@ -14,6 +14,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <initializer_list>
 #include <string>
 #include <vector>
@@ -34,7 +36,7 @@ namespace
     bool g_quitArmed = false; // "Quit game" needs a second Cross
     std::atomic<bool> g_holdBlock{false}; // a button pressed in the menu is still held
     int g_tab = 0, g_item = 0;
-    Rectangle g_tabRects[8]{};
+    Rectangle g_tabRects[16]{};
     std::vector<std::pair<Rectangle, int>> g_rowRects;
     bool g_stateConfirm = false, g_stateConfirmYes = false;
     int g_stateConfirmItem = 0;
@@ -106,6 +108,25 @@ namespace
             {"This replaces the selected state with the current game session.",
              "Isto substitui o estado selecionado pela sessão atual do jogo."},
             {"This removes only the selected state file.", "Isto remove apenas o arquivo do estado selecionado."},
+            {"Picture", "Imagem"},
+            {"Filters", "Filtros"},
+            {"Old TV and video", "TV antiga e vídeo"},
+            {"Parts of the preset", "Partes do preset"},
+            {"Graphics", "Gráficos"},
+            {"Mods", "Mods"},
+            {"Saves", "Partidas"},
+            {"Advanced", "Avançado"},
+            {"Look", "Visual"},
+            {"Colour", "Cor"},
+            {"Resolution", "Resolução"},
+            {"Detail", "Detalhe"},
+            {"Textures", "Texturas"},
+            {"Characters", "Personagens"},
+            {"Interface", "Interface"},
+            {"Sound and controller", "Som e controle"},
+            {"Game", "Jogo"},
+            {"Effects", "Efeitos"},
+            {"Press again", "Pressione de novo"},
             {"Renderer", "Gráficos"},
             {"Quality", "Qualidade"},
             {"Debug", "Depuração"},
@@ -193,6 +214,7 @@ namespace
         kVolume,
         kLanguage,
         kQuit,
+        kAbout,
     };
 
     struct Item
@@ -202,14 +224,7 @@ namespace
         const char *help;
     };
 
-    struct Tab
-    {
-        const char *label;
-        const Item *items;
-        int count;
-    };
-
-    const Item kVideoItems[] = {
+    const Item kHostItems[] = {
         {kExactAlpha, "Exact transparency",
          "Draws the effects that use the alpha test exactly like the PS2 (clouds, mist, shadows). "
          "Turning it off gains a few frames per second; some mist and edges look harder."},
@@ -232,53 +247,111 @@ namespace
         {kFrameGeneration, "Frame generation (2x)",
          "The native renderer adds an interpolated frame when the display has room. The game keeps its base frame rate."},
 #endif
-    };
-    const Item kSoundItems[] = {
         {kVolume, "Volume", "Volume of the game's sound and music."},
-    };
-    const Item kSystemItems[] = {
         {kLanguage, "Language", "Language of this menu. Automatic follows the system language."},
         {kQuit, "Return to launcher", "Closes the game. Unsaved progress is lost."},
+        {kAbout, "About", "Shadow of the Colossus, recompiled to run natively. celosia - port by HenryKun55. Shadow of the Colossus (c) Sony Interactive Entertainment. "
+         "Built on PS2Recomp. Thanks to the sotc-pc project."},
     };
-    // The Quality, Renderer and Debug tabs list native_renderer::tuningItems()
-    // (the same list as the Mac's F10 panel), each with a last "Defaults" row:
-    // Quality the preset, resolution, filtering...; Debug what to draw at
-    // all, the layers; Renderer the rest.
-    constexpr int kQualityTab = 1, kRendererTab = 2, kDebugTab = 3, kStatesTab = 6;
-    const Tab kTabs[] = {
-        {"Video", kVideoItems, static_cast<int>(sizeof(kVideoItems) / sizeof(kVideoItems[0]))},
-        {"Quality", nullptr, -1},
-        {"Renderer", nullptr, -1},
-        {"Debug", nullptr, -1},
-        {"Sound", kSoundItems, 1},
-        {"System", kSystemItems, 2},
-        {"States", nullptr, -1},
-        {"About", nullptr, 0},
-    };
-    constexpr int kTabCount = 8;
-    int g_tabNow = 0; // the tab the renderer helpers below list
+    // What each tab lists: headings (not selectable), the items above, and
+    // native_renderer::tuningItems() by key. What no tab names goes to
+    // Advanced; what does nothing on this renderer is left out.
+    constexpr int kAdvancedTab = 4, kStatesTab = 5, kTabCount = 6;
+    const char *const kTabs[kTabCount] = {"Picture", "Graphics", "Mods", "System", "Advanced", "Saves"};
 
-    // The list's items of a tuning tab.
-    const std::vector<int> &tuningRows(int tab)
+    struct Row
     {
-        static std::vector<int> normal, dbg, quality;
-        if (normal.empty() && dbg.empty())
+        enum Kind { Heading, Host, Tuning, Reset } kind;
+        int index = 0;
+        const char *label = "";
+    };
+    const std::vector<Row> &tabRows(int tab)
+    {
+        static std::vector<Row> tabs[kTabCount];
+        if (tabs[0].empty())
         {
             const auto &items = native_renderer::tuningItems();
-            for (int i = 0; i < static_cast<int>(items.size()); ++i)
-                (items[i].debug ? dbg : (items[i].quality ? quality : normal)).push_back(i);
+            std::vector<bool> used(items.size(), false);
+            const auto heading = [](int t, const char *label) { tabs[t].push_back({Row::Heading, 0, label}); };
+            const auto host = [](int t, std::initializer_list<ItemId> ids)
+            {
+                for (const ItemId id : ids)
+                    for (int i = 0; i < static_cast<int>(sizeof(kHostItems) / sizeof(kHostItems[0])); ++i)
+                        if (kHostItems[i].id == id)
+                            tabs[t].push_back({Row::Host, i});
+            };
+            const auto take = [&](int t, std::initializer_list<const char *> keys)
+            {
+                for (const char *key : keys)
+                    for (size_t i = 0; i < items.size(); ++i)
+                        if (std::strcmp(items[i].key, key) == 0)
+                        {
+                            used[i] = true;
+                            if (native_renderer::tuningApplies(items[i]))
+                                tabs[t].push_back({Row::Tuning, static_cast<int>(i)});
+                        }
+            };
+            take(0, {"picture_profile", "ps2_look", "fog_amount", "picture_filter", "picture_filter_strength", "tv_filter", "tv_strength", "color_contrast", "color_brightness", "color_saturation"});
+            heading(1, "Resolution");
+            take(1, {"quality_preset", "render_scale"});
+#ifdef PS2X_DESKTOP_VIDEO
+            host(1, {kUpscaleFsr, kFrameGeneration});
+#endif
+            heading(1, "Detail");
+            take(1, {"texture_filter", "fxaa", "model_detail", "water_detail", "shadow_detail"});
+            heading(1, "Textures");
+            take(1, {"hd_textures", "ground_variation"});
+            heading(2, "Characters");
+            take(2, {"mod_outfit", "mod_cloak", "mod_headband", "mod_agro", "mod_mono", "mod_items"});
+            heading(2, "Interface");
+            take(2, {"hd_interface", "mod_icons", "mod_gameover", "mod_trail", "mod_hints_off"});
+            take(kStatesTab, {"autosave"}); // drawn under the states
+            heading(3, "Screen");
+            host(3, {kScreen});
+#ifdef PS2X_DESKTOP_VIDEO
+            host(3, {kFullscreen, kWindowResolution, kVSync});
+#endif
+            host(3, {kShowFps});
+            heading(3, "Sound and controller");
+            host(3, {kVolume});
+            take(3, {"rumble"});
+            heading(3, "Game");
+            host(3, {kLanguage, kAbout, kQuit});
+            heading(kAdvancedTab, "Effects");
+            host(kAdvancedTab, {kExactAlpha});
+            for (const bool debug : {false, true})
+            {
+                if (debug)
+                    heading(kAdvancedTab, "Debug");
+                for (size_t i = 0; i < items.size(); ++i)
+                    if (!used[i] && items[i].debug == debug && native_renderer::tuningApplies(items[i]))
+                        tabs[kAdvancedTab].push_back({Row::Tuning, static_cast<int>(i)});
+            }
+            tabs[kAdvancedTab].push_back({Row::Reset});
         }
-        return tab == kDebugTab ? dbg : (tab == kQualityTab ? quality : normal);
+        return tabs[tab];
     }
-
-    bool isTuningTab(int tab) { return tab == kQualityTab || tab == kRendererTab || tab == kDebugTab; }
 
     int itemCount(int tab)
     {
-        if (tab == kStatesTab)
-            return savestates::SlotCount * 3;
-        return isTuningTab(tab) ? static_cast<int>(tuningRows(tab).size()) + 1 : kTabs[tab].count;
+        if (tab == kStatesTab) // and the automatic ones' switch
+            return savestates::SlotCount * 3 + 1;
+        return static_cast<int>(tabRows(tab).size());
     }
+
+    // The nearest selectable row from `item` on, in the direction `dir`.
+    int selectable(int tab, int item, int dir)
+    {
+        if (tab == kStatesTab)
+            return item;
+        const auto &rows = tabRows(tab);
+        const int count = static_cast<int>(rows.size());
+        for (int i = 0; i < count && rows[item].kind == Row::Heading; ++i)
+            item = (item + (dir < 0 ? count - 1 : 1)) % count;
+        return item;
+    }
+
+    bool g_resetArmed = false;
 
     void stateAction(int item, bool confirmed = false)
     {
@@ -309,53 +382,6 @@ namespace
         const savestates::Action action = operation == 0 ? savestates::Action::Save :
                                           operation == 1 ? savestates::Action::Load : savestates::Action::Delete;
         savestates::request(action, slot);
-    }
-
-    // Row i of the current tuning tab -> the list's item (or -1: the reset row).
-    int tuningIndex(int i)
-    {
-        const auto &rows = tuningRows(g_tabNow);
-        return i < static_cast<int>(rows.size()) ? rows[i] : -1;
-    }
-
-    const char *rendererLabel(int i)
-    {
-        const int k = tuningIndex(i);
-        if (k < 0)
-            return portuguese() ? "Restaurar padrões" : "Reset to defaults";
-        const auto &item = native_renderer::tuningItems()[k];
-        return portuguese() ? item.labelPt : item.label;
-    }
-
-    const char *rendererHelp(int i)
-    {
-        const int k = tuningIndex(i);
-        if (k < 0)
-            return portuguese() ? "Volta todos os ajustes do renderer aos valores padrão." : "Puts every renderer adjustment back to its default.";
-        const auto &item = native_renderer::tuningItems()[k];
-        if (!native_renderer::tuningApplies(item))
-        {
-            // Said first: it changes nothing on this renderer.
-            static std::string text;
-            text = std::string(portuguese() ? "Sem efeito no renderer " : "No effect on the ") + native_renderer::backendName() +
-                   (portuguese() ? " em uso. " : " renderer in use. ") + (portuguese() ? item.helpPt : item.help);
-            return text.c_str();
-        }
-        return portuguese() ? item.helpPt : item.help;
-    }
-
-    std::string rendererValue(int i)
-    {
-        const int k = tuningIndex(i);
-        if (k < 0)
-            return "";
-        const auto &item = native_renderer::tuningItems()[k];
-        std::string v = native_renderer::tuningValueText(item, portuguese());
-        if (v == "On" || v == "Off")
-            v = T(v.c_str());
-        if (!native_renderer::tuningApplies(item)) // listed, but this renderer ignores it
-            v += portuguese() ? (item.backends == 1 ? " (só Metal)" : " (só OpenGL)") : (item.backends == 1 ? " (Metal only)" : " (OpenGL only)");
-        return v;
     }
 
     std::string valueText(ItemId id)
@@ -396,6 +422,43 @@ namespace
         case kQuit: return g_quitArmed ? T("Confirm again to return") : "";
         }
         return "";
+    }
+
+    // A row's texts.
+    const char *rowLabel(const Row &row)
+    {
+        if (row.kind == Row::Heading)
+            return T(row.label);
+        if (row.kind == Row::Reset)
+            return portuguese() ? "Restaurar padrões" : "Reset everything to defaults";
+        if (row.kind == Row::Host)
+            return T(kHostItems[row.index].label);
+        const auto &item = native_renderer::tuningItems()[row.index];
+        return portuguese() ? item.labelPt : item.label;
+    }
+
+    const char *rowHelp(const Row &row)
+    {
+        if (row.kind == Row::Heading)
+            return "";
+        if (row.kind == Row::Reset)
+            return portuguese() ? "Volta todos os ajustes de imagem, gráficos e mods aos padrões." : "Puts every picture, graphics and mod setting back to its default.";
+        if (row.kind == Row::Host)
+            return T(kHostItems[row.index].help);
+        const auto &item = native_renderer::tuningItems()[row.index];
+        return portuguese() ? item.helpPt : item.help;
+    }
+
+    std::string rowValue(const Row &row)
+    {
+        if (row.kind == Row::Heading)
+            return "";
+        if (row.kind == Row::Reset)
+            return g_resetArmed ? T("Press again") : "";
+        if (row.kind == Row::Host)
+            return valueText(kHostItems[row.index].id);
+        const std::string v = native_renderer::tuningValueText(native_renderer::tuningItems()[row.index], portuguese());
+        return v == "On" || v == "Off" ? T(v.c_str()) : v;
     }
 
     // ---- Persistence --------------------------------------------------------
@@ -467,7 +530,7 @@ namespace
 
     enum Button
     {
-        kUp, kDown, kLeft, kRight, kCross, kCircle, kTriangle, kL1, kR1, kSelect, kButtonCount
+        kUp, kDown, kLeft, kRight, kCross, kCircle, kTriangle, kSquare, kL1, kR1, kSelect, kButtonCount
     };
 
     bool g_down[kButtonCount] = {};
@@ -487,6 +550,7 @@ namespace
             g_down[kCross] = pad.buttons[GAMEPAD_BUTTON_RIGHT_FACE_DOWN];
             g_down[kCircle] = pad.buttons[GAMEPAD_BUTTON_RIGHT_FACE_RIGHT];
             g_down[kTriangle] = pad.buttons[GAMEPAD_BUTTON_RIGHT_FACE_UP];
+            g_down[kSquare] = pad.buttons[GAMEPAD_BUTTON_RIGHT_FACE_LEFT];
             g_down[kL1] = pad.buttons[GAMEPAD_BUTTON_LEFT_TRIGGER_1];
             g_down[kR1] = pad.buttons[GAMEPAD_BUTTON_RIGHT_TRIGGER_1];
             g_down[kSelect] = pad.buttons[GAMEPAD_BUTTON_MIDDLE_LEFT];
@@ -499,6 +563,7 @@ namespace
         g_down[kCross] |= IsKeyDown(KEY_ENTER);
         g_down[kCircle] |= IsKeyDown(KEY_BACKSPACE);
         g_down[kTriangle] |= IsKeyDown(KEY_H);
+        g_down[kSquare] |= IsKeyDown(KEY_R);
         g_down[kL1] |= IsKeyDown(KEY_Q);
         g_down[kR1] |= IsKeyDown(KEY_E);
     }
@@ -654,7 +719,7 @@ namespace
         const auto slots = savestates::slots();
         const bool working = savestates::busy();
         const int statusY = boxY + boxH - size * 9 / 2;
-        const int rowH = std::max(1, (statusY - size / 2 - listY) / savestates::SlotCount);
+        const int rowH = std::max(1, (statusY - size / 2 - listY) / (savestates::SlotCount + 1));
         const int labelSize = std::min(small, std::max(10, rowH * 9 / 20));
         const int metaSize = std::max(10, std::min(size / 2, rowH / 3));
         const int infoW = (boxW - 2 * pad) * 43 / 100;
@@ -665,7 +730,7 @@ namespace
             const int y = listY + slot * rowH;
             if (g_item / 3 == slot)
                 DrawRectangle(boxX + pad / 2, y, boxW - pad, rowH - 1, Color{255, 255, 255, 16});
-            const std::string name = slot == 0 ? T("Quick state") : std::string("Slot ") + std::to_string(slot);
+            const std::string name = slot == 0 ? T("Quick state") : slot >= savestates::AutoSlot ? std::string("Auto ") + std::to_string(slot - savestates::AutoSlot + 1) : std::string("Slot ") + std::to_string(slot);
             DrawText(name.c_str(), boxX + pad, y + 2, labelSize, g_item / 3 == slot ? text : dim);
             std::string metadata = T("Empty");
             if (slots[slot].exists)
@@ -693,6 +758,17 @@ namespace
                     --font;
                 DrawText(label, x + (buttonW - MeasureText(label, font)) / 2, y + (rowH - font) / 2,
                          font, enabled ? (g_item == item ? accent : text) : Color{91, 96, 104, 255});
+            }
+        }
+        {
+            const int y = listY + savestates::SlotCount * rowH, item = savestates::SlotCount * 3;
+            if (g_item >= item)
+                DrawRectangle(boxX + pad / 2, y, boxW - pad, rowH - 1, Color{255, 255, 255, 16});
+            for (const Row &row : tabRows(kStatesTab))
+            {
+                g_rowRects.push_back({Rectangle{float(boxX + pad / 2), float(y), float(boxW - pad), float(rowH - 1)}, item});
+                DrawText(rowLabel(row), boxX + pad, y + (rowH - labelSize) / 2, labelSize, g_item >= item ? text : dim);
+                DrawText(rowValue(row).c_str(), boxX + pad + infoW + gap, y + (rowH - labelSize) / 2, labelSize, g_item >= item ? accent : dim);
             }
         }
         DrawRectangle(boxX + pad, statusY - size / 3, boxW - 2 * pad, 1, Color{70, 80, 90, 255});
@@ -799,6 +875,55 @@ void update()
             savestates::request(savestates::Action::Load, std::atoi(spec));
         }
     }
+    // Development: SOTC_SWEEP=<file>: from SOTC_SWEEP_AT seconds on, a line of
+    // key=value adjustments every SOTC_SWEEP_EVERY.
+    if (static const char *sweepFile = std::getenv("SOTC_SWEEP"); sweepFile)
+    {
+        static std::vector<std::string> lines = [] { std::vector<std::string> l; std::ifstream f(sweepFile); for (std::string s; std::getline(f, s);) l.push_back(s); return l; }();
+        static const double at = std::atof(std::getenv("SOTC_SWEEP_AT") ? std::getenv("SOTC_SWEEP_AT") : "18"), every = std::atof(std::getenv("SOTC_SWEEP_EVERY") ? std::getenv("SOTC_SWEEP_EVERY") : "2.4");
+        static int shown = -1;
+        const int now = GetTime() < at ? -1 : static_cast<int>((GetTime() - at) / every);
+        if (now != shown && now >= 0 && now < static_cast<int>(lines.size()))
+        {
+            shown = now;
+            std::string line = lines[now];
+            for (size_t p = 0; p < line.size();)
+            {
+                const size_t e = std::min(line.find(' ', p), line.size()), q = line.find('=', p);
+                if (line.compare(p, 4, "tab=") == 0) // the menu itself: tab=<tab><item, two digits>
+                {
+                    const int v = std::atoi(line.c_str() + 4 + p);
+                    g_open = true, g_tab = std::clamp(v / 100, 0, kTabCount - 1), g_item = std::clamp(v % 100, 0, itemCount(g_tab) - 1);
+                }
+                else if (q != std::string::npos && q < e)
+                    native_renderer::tuningRestore(line.substr(p, q - p).c_str(), static_cast<float>(std::atof(line.c_str() + q + 1)));
+                p = e + 1;
+            }
+            std::fprintf(stderr, "[sweep] %d %s\n", now, line.c_str());
+        }
+    }
+    // A save state by itself every 10 minutes of play, the oldest of three slots.
+    static double nextAutosave = -1.0;
+    static const double autosaveEvery = std::getenv("SOTC_AUTOSAVE_SECONDS") ? std::max(10.0, std::atof(std::getenv("SOTC_AUTOSAVE_SECONDS"))) : 600.0;
+    if (nextAutosave < 0.0)
+        nextAutosave = GetTime() + autosaveEvery;
+    if (GetTime() >= nextAutosave && !g_open && !savestates::busy())
+    {
+        nextAutosave = GetTime() + autosaveEvery;
+        if (native_renderer::tuning().autosave && native_renderer::shown())
+        {
+            int oldest = savestates::AutoSlot;
+            std::filesystem::file_time_type age = std::filesystem::file_time_type::max();
+            for (int slot = savestates::AutoSlot; slot < savestates::SlotCount; ++slot)
+            {
+                std::error_code ec;
+                const auto time = std::filesystem::last_write_time(savestates::directory() / ("slot-" + std::to_string(slot) + ".sotcstate"), ec);
+                if (ec) { oldest = slot; break; }
+                if (time < age) { age = time; oldest = slot; }
+            }
+            savestates::request(savestates::Action::Save, oldest);
+        }
+    }
     readButtons();
     if (g_holdBlock && !anyDown())
         g_holdBlock = false;
@@ -873,7 +998,7 @@ void update()
         const Vector2 pointer = GetMousePosition();
         for (int i = 0; i < kTabCount; ++i) {
             if (CheckCollisionPointRec(pointer, g_tabRects[i])) {
-                g_tab = i; g_item = 0; g_quitArmed = false;
+                g_tab = i; g_item = selectable(i, 0, 1); g_quitArmed = g_resetArmed = false;
                 return;
             }
         }
@@ -887,12 +1012,11 @@ void update()
         }
     }
 #endif
-    const Tab &tab = kTabs[g_tab];
     if (pressed(kL1) || pressed(kR1))
     {
         g_tab = (g_tab + (pressed(kR1) ? 1 : kTabCount - 1)) % kTabCount;
-        g_item = 0;
-        g_quitArmed = false;
+        g_item = selectable(g_tab, 0, 1);
+        g_quitArmed = g_resetArmed = false;
         return;
     }
     const int count = itemCount(g_tab);
@@ -902,8 +1026,18 @@ void update()
     {
         if (pressed(kUp) || pressed(kDown))
         {
-            const int slot = (g_item / 3 + (pressed(kDown) ? 1 : savestates::SlotCount - 1)) % savestates::SlotCount;
-            g_item = slot * 3 + g_item % 3;
+            const int slot = (g_item / 3 + (pressed(kDown) ? 1 : savestates::SlotCount)) % (savestates::SlotCount + 1);
+            g_item = slot == savestates::SlotCount ? slot * 3 : slot * 3 + g_item % 3; // the last: the automatic ones' switch
+        }
+        if (g_item >= savestates::SlotCount * 3)
+        {
+            if (mouseActivate || pressed(kCross) || pressed(kLeft) || pressed(kRight))
+            {
+                for (const Row &row : tabRows(kStatesTab))
+                    native_renderer::tuningStep(native_renderer::tuningItems()[row.index], 1);
+                save();
+            }
+            return;
         }
         if (pressed(kLeft) || pressed(kRight))
             g_item = (g_item / 3) * 3 + (g_item % 3 + (pressed(kRight) ? 1 : 2)) % 3;
@@ -915,31 +1049,47 @@ void update()
     }
     if (pressed(kUp) || pressed(kDown))
     {
-        g_item = (g_item + (pressed(kDown) ? 1 : count - 1)) % count;
-        g_quitArmed = false;
+        g_item = selectable(g_tab, (g_item + (pressed(kDown) ? 1 : count - 1)) % count, pressed(kDown) ? 1 : -1);
+        g_quitArmed = g_resetArmed = false;
     }
-    if (isTuningTab(g_tab))
+    g_item = selectable(g_tab, std::clamp(g_item, 0, count - 1), 1);
+    const Row &row = tabRows(g_tab)[g_item];
+    if (pressed(kSquare) && row.kind == Row::Tuning) // the row back to its default
     {
-        g_tabNow = g_tab;
-        const int dir = (mouseActivate || pressed(kCross) || pressed(kRight)) ? 1 : (pressed(kLeft) ? -1 : 0);
-        if (dir != 0)
-        {
-            const int k = tuningIndex(g_item);
-            if (k < 0)
-                native_renderer::tuning() = native_renderer::defaultTuning();
-            else
-                native_renderer::tuningStep(native_renderer::tuningItems()[k], dir);
-            save();
-        }
-        if (pressed(kTriangle))
-            g_help = true;
+        const auto &item = native_renderer::tuningItems()[row.index];
+        const native_renderer::Tuning d = native_renderer::defaultTuning();
+        native_renderer::Tuning &t = native_renderer::tuning();
+        if (item.toggle)
+            t.*item.toggle = d.*item.toggle;
+        else if (item.number && item.number != &native_renderer::Tuning::pictureProfile && item.number != &native_renderer::Tuning::preset)
+            t.*item.number = d.*item.number;
+        save();
         return;
     }
-    const ItemId id = tab.items[g_item].id;
-    if (mouseActivate || pressed(kCross) || pressed(kRight))
-        change(id, +1);
-    else if (pressed(kLeft) && id != kQuit)
-        change(id, -1);
+    const int dir = (mouseActivate || pressed(kCross) || pressed(kRight)) ? 1 : (pressed(kLeft) ? -1 : 0);
+    if (dir != 0)
+    {
+        if (row.kind == Row::Host)
+        {
+            const ItemId id = kHostItems[row.index].id;
+            if (id != kAbout && (id != kQuit || dir > 0))
+                change(id, dir);
+        }
+        else if (row.kind == Row::Reset)
+        {
+            if (g_resetArmed)
+            {
+                native_renderer::tuning() = native_renderer::defaultTuning();
+                save();
+            }
+            g_resetArmed = !g_resetArmed;
+        }
+        else
+        {
+            native_renderer::tuningStep(native_renderer::tuningItems()[row.index], dir);
+            save();
+        }
+    }
     if (pressed(kTriangle))
         g_help = true;
 }
@@ -952,7 +1102,7 @@ void draw(int screenWidth, int screenHeight)
     const int small = std::max(10, size * 4 / 5);
     const int pad = size;
     const int boxW = std::min(screenWidth - 2 * pad, size * 34);
-    const int boxH = std::min(screenHeight - 2 * pad, size * 20);
+    const int boxH = std::min(screenHeight - 2 * pad, size * 26);
     const int boxX = (screenWidth - boxW) / 2, boxY = (screenHeight - boxH) / 2;
     const Color panel{12, 14, 18, 230}, line{70, 80, 90, 255}, text{225, 228, 230, 255}, dim{150, 156, 162, 255},
         accent{232, 196, 120, 255}, highlight{255, 255, 255, 28};
@@ -970,20 +1120,20 @@ void draw(int screenWidth, int screenHeight)
     {
         int total = 0;
         for (int i = 0; i < kTabCount; ++i)
-            total += MeasureText(T(kTabs[i].label), size) + tabGap;
+            total += MeasureText(T(kTabs[i]), size) + tabGap;
         if (total > boxW - 2 * pad)
         {
             tabGap = size;
             total = 0;
             for (int i = 0; i < kTabCount; ++i)
-                total += MeasureText(T(kTabs[i].label), size) + tabGap;
+                total += MeasureText(T(kTabs[i]), size) + tabGap;
             if (total > boxW - 2 * pad)
                 tabSize = small;
         }
     }
     for (int i = 0; i < kTabCount; ++i)
     {
-        const char *label = T(kTabs[i].label);
+        const char *label = T(kTabs[i]);
         const int w = MeasureText(label, tabSize);
         // The additional States tab must not push controls outside the menu
         // at smaller window sizes or with longer Portuguese labels.
@@ -1000,11 +1150,8 @@ void draw(int screenWidth, int screenHeight)
     }
     DrawRectangle(boxX + pad, tabY + size * 3 / 2 + 2, boxW - 2 * pad, 1, line);
 
-    const Tab &tab = kTabs[g_tab];
     const int listY = tabY + size * 2 + size / 2;
     const int helpY = boxY + boxH - size * 5;
-    const bool renderer = isTuningTab(g_tab);
-    g_tabNow = g_tab;
     if (g_tab == kStatesTab)
     {
         drawStates(boxX, boxY, boxW, boxH, listY, size, small);
@@ -1012,24 +1159,13 @@ void draw(int screenWidth, int screenHeight)
     }
     if (g_help && itemCount(g_tab) > 0)
     {
-        DrawText(renderer ? rendererLabel(g_item) : T(tab.items[g_item].label), boxX + pad, listY, size, accent);
-        drawWrapped(renderer ? rendererHelp(g_item) : T(tab.items[g_item].help), boxX + pad, listY + size * 2, boxW - 2 * pad, small, text, small / 2);
+        const Row &row = tabRows(g_tab)[selectable(g_tab, std::clamp(g_item, 0, itemCount(g_tab) - 1), 1)];
+        DrawText(rowLabel(row), boxX + pad, listY, size, accent);
+        drawWrapped(rowHelp(row), boxX + pad, listY + size * 2, boxW - 2 * pad, small, text, small / 2);
         if (!drawInputHints(HintRow::Back, boxX + pad, boxY + boxH - size * 3 / 2, boxW - 2 * pad, small, dim))
             DrawText(T("Triangle / O: back"), boxX + pad, boxY + boxH - size * 3 / 2, small, dim);
         return;
     }
-    if (itemCount(g_tab) == 0)
-    {
-        int y = listY;
-        for (const char *l : {"Shadow of the Colossus, recompiled to run natively.", "celosia - port by HenryKun55", "",
-                              "Shadow of the Colossus (c) Sony Interactive Entertainment.",
-                              "Built on PS2Recomp. Thanks to the sotc-pc project."})
-        {
-            DrawText(T(l), boxX + pad, y, small, *l ? text : dim);
-            y += small * 3 / 2;
-        }
-    }
-    else
     {
         // Scrolls when the list is longer than the box (the Renderer tab).
         const int count = itemCount(g_tab);
@@ -1041,9 +1177,16 @@ void draw(int screenWidth, int screenHeight)
             g_rowRects.push_back({Rectangle{float(boxX + pad/2), float(y - size/4), float(boxW - pad), float(size*3/2)}, i});
             if (i == g_item)
                 DrawRectangle(boxX + pad / 2, y - size / 4, boxW - pad, size * 3 / 2, highlight);
-            DrawText(renderer ? rendererLabel(i) : T(tab.items[i].label), boxX + pad, y, size, i == g_item ? text : dim);
-            const std::string value = renderer ? rendererValue(i) : valueText(tab.items[i].id);
-            DrawText(value.c_str(), boxX + boxW * 11 / 20, y, size, i == g_item ? accent : dim);
+            const Row &row = tabRows(g_tab)[i];
+            if (row.kind == Row::Heading)
+            {
+                g_rowRects.pop_back();
+                DrawText(rowLabel(row), boxX + pad, y + size / 4, small, accent);
+                DrawRectangle(boxX + pad, y + size + size / 4, boxW - 2 * pad, 1, line);
+                continue;
+            }
+            DrawText(rowLabel(row), boxX + pad + size / 2, y, size, i == g_item ? text : dim);
+            DrawText(rowValue(row).c_str(), boxX + boxW * 11 / 20, y, size, i == g_item ? accent : dim);
         }
         if (first > 0)
             DrawText("^", boxX + boxW - pad, listY, small, dim);
@@ -1051,7 +1194,7 @@ void draw(int screenWidth, int screenHeight)
             DrawText("v", boxX + boxW - pad, listY + (rows - 1) * size * 3 / 2, small, dim);
         DrawRectangle(boxX + pad, helpY - size / 2, boxW - 2 * pad, 1, line);
         // The help in the space above the controls line, smaller when long.
-        const char *help = renderer ? rendererHelp(g_item) : T(tab.items[g_item].help);
+        const char *help = rowHelp(tabRows(g_tab)[selectable(g_tab, std::clamp(g_item, 0, count - 1), 1)]);
         const int helpRoom = boxY + boxH - size * 3 / 2 - helpY;
         int helpSize = small;
         while (helpSize > 10 && drawWrapped(help, 0, 0, boxW - 2 * pad, helpSize, dim, helpSize / 3, false) * (helpSize + helpSize / 3) > helpRoom)

@@ -257,6 +257,7 @@ void PS2Runtime::processStateRequest()
     if (!savestates::take(action,slot)) return;
     struct TimingGuard { EeScheduler &scheduler; ~TimingGuard() { scheduler.rebaseHostClockAfterStateOperation(); } } timing{*m_eeScheduler};
     const auto path=savestates::directory()/(slot==0?"quick.sotcstate":"slot-"+std::to_string(slot)+".sotcstate");
+    [[maybe_unused]] const auto began=std::chrono::steady_clock::now();
     std::string error;
     try {
         if (action==savestates::Action::Delete) {
@@ -270,6 +271,28 @@ void PS2Runtime::processStateRequest()
             if (!captureMachineState(payload,error) || !validateMachineState(payload,error)) { savestates::complete("Não foi possível salvar: "+error); return; }
             uint32_t core=0,game=0; uint64_t coreBytes=0;
             if (!stateCoreIdentity(core,coreBytes,game,error)) { savestates::complete(error); return; }
+#if defined(__linux__)
+            if (slot>=savestates::AutoSlot) {
+                // Written off the game's thread: only the capture holds it up.
+                static std::atomic<bool> writing{false};
+                if (writing.exchange(true)) { savestates::complete(""); return; }
+                std::thread([path,core,coreBytes,game,payload=std::move(payload)] {
+                    std::string problem;
+                    try {
+                        std::vector<uint8_t> file;
+                        ps2state::Writer w(file,problem,ps2state::DefaultLimit+4096);
+                        w.pod(kStateFileMagic); w.pod(kStateFileVersion); w.pod(uint32_t{0x12345678}); w.pod(uint32_t(sizeof(R5900Context)));
+                        w.pod(core); w.pod(coreBytes); w.pod(game); w.pod(uint64_t(std::time(nullptr))); w.pod(savestates::checksum(payload)); w.vector(payload);
+                        const bool ok=w.finish() && atomicStateFile(path,file,problem);
+                        std::fprintf(stderr,"[autosave] %s %s\n",path.filename().c_str(),ok&&problem.empty()?"written":problem.c_str());
+                    } catch (const std::exception &exception) { std::fprintf(stderr,"[autosave] %s\n",exception.what()); }
+                    writing=false;
+                }).detach();
+                std::fprintf(stderr,"[autosave] captured in %.0f ms\n",std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-began).count());
+                savestates::complete("");
+                return;
+            }
+#endif
             std::vector<uint8_t> file;
             ps2state::Writer w(file,error,ps2state::DefaultLimit+4096);
             w.pod(kStateFileMagic); w.pod(kStateFileVersion); w.pod(uint32_t{0x12345678}); w.pod(uint32_t(sizeof(R5900Context)));
