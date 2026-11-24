@@ -260,6 +260,7 @@ namespace native_renderer
         // of a later layer the pixels with a non-zero count are darkened by
         // `shadow` (0..1).
         bool shadowVolume = false;
+        bool noVertexFog = false; // the GS PRIM has FGE off (SotC: the dome of clouds)
         float shadow = 0.5f;
         // Planar reflections: reflectionSource draws (the game's mirrored
         // geometry) go to an off-screen image; a reflectionSample draw shows
@@ -311,6 +312,9 @@ namespace native_renderer
         bool vertexFog = false;
         float base = 255.0f, scale = 0.0f;
         float colour[3] = {0, 0, 0}; // 0..1
+        // Near plane (view depth) of the background layer: the PS2 cuts layer 1 closer than
+        // getZFogNear - getZFogScissorMargin (at least 10), the camera packet 0x1098e20 makes for it.
+        float backgroundNear = 0.0f;
     };
     void setFog(const Fog &fog);
 

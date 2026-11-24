@@ -145,6 +145,8 @@ uniform vec4 uClip[4], uDirections[4], uColours[4]; // matrix columns
 uniform vec4 uMisc;  // lit, opacity, uv offset
 uniform vec4 uFogB;  // size, vertex fog, base
 uniform vec4 uFogC;  // scale, lod K, lod scale, max lod
+uniform float uClipNear; // background pass: view depths below are cut
+out float gl_ClipDistance[1];
 out vec4 vUV;        // uv, w, fog x w (the fog factor is linear on the screen, as the GS's)
 out vec4 vColor;
 out vec4 vScreen;    // clip x, y, w
@@ -153,6 +155,7 @@ void main()
     vec4 c = uClip[0] * aPos.x + uClip[1] * aPos.y + uClip[2] * aPos.z + uClip[3];
     // Depth from w, near plane at w = 0.1: depth = 1 - 0.1 / w.
     gl_Position = vec4(c.x, c.y, c.w - 0.2, c.w);
+    gl_ClipDistance[0] = c.w - uClipNear;
     float fog = uFogB.z > 0.5 ? clamp(uFogB.w + uFogC.x / max(c.w, 1e-3), 0.0, 255.0) / 255.0 : 1.0;
     vUV = vec4(aUV + uMisc.zw, c.w, fog * c.w);
     vColor = aColor / 128.0;
@@ -2086,7 +2089,9 @@ float4 main(float4 vUV : TEXCOORD0, uniform sampler2D uSrc, uniform sampler2D uS
                     softAmount = d.state.shadow;
                 }
         const bool softShadows = softOrder != 0;
-        static const bool bgFog = std::getenv("SOTC_NATIVE_BGFOG") != nullptr;
+        // Layer 1 takes the vertex fog as the world does, where the PRIM has
+        // FGE (not the dome of clouds): SOTC_NATIVE_BGFOG=0 leaves it out.
+        static const bool bgFog = [] { const char *v = std::getenv("SOTC_NATIVE_BGFOG"); return !v || *v != '0'; }();
 
         auto pass = [&](Target &target, bool backgroundOnly, uint32_t fromOrder = 0, uint32_t toOrder = ~0u, bool load = false, bool mirror = false,
                         bool apart = false)
@@ -2141,6 +2146,26 @@ float4 main(float4 vUV : TEXCOORD0, uniform sampler2D uSrc, uniform sampler2D uS
             if (!nearClip)
                 glEnable(GL_DEPTH_CLAMP);
 #endif
+#if !defined(PS2X_NATIVE_VITA)
+            static const bool bgNearOff = [] { const char *v = std::getenv("SOTC_BG_NEAR"); return v && *v == '0'; }();
+            const bool cutBackground = backgroundOnly && !bgNearOff && fog.backgroundNear > 0.0f;
+            if (cutBackground)
+                glEnable(GL_CLIP_DISTANCE0);
+#endif
+            const float *domeClip = nullptr; // background pass: the dome's transform, while only it was drawn
+            bool domePrefix = true;
+            if (backgroundOnly)
+            {
+                // Only when the layer has scenery with another matrix after it.
+                const Draw *first = nullptr, *last = nullptr;
+                for (const uint64_t key : drawOrder)
+                    if (const Draw &b = draws[static_cast<size_t>(key & 0xFFFFFFFFu)]; b.state.background && !b.state.reflectionSource)
+                    {
+                        if (!first) first = &b;
+                        last = &b;
+                    }
+                domePrefix = first && std::memcmp(first->clip, last->clip, sizeof(first->clip)) != 0;
+            }
             uint32_t shadowOrder = 0;
             float shadowAmount = 0.0f;
             auto resolveShadows = [&]
@@ -2308,8 +2333,26 @@ float4 main(float4 vUV : TEXCOORD0, uniform sampler2D uSrc, uniform sampler2D uS
                 // The depth function is always LEQUAL here (the GS's GEQUAL: a
                 // surface drawn again in place passes); test and writes vary.
                 const bool backdrop = d.state.screen || d.state.background;
-                const int depthTest = backdrop && !d.state.screenDepthTest ? 0 : 1;
-                const int depthMask = d.state.screenDepthTest ? 0
+                // Layer 1 (sky and far landscape) is depth tested among itself on the PS2 (bgEnd clears Z after it);
+                // its image has a depth buffer of its own. Without the test the far side of a ridge, drawn later,
+                // covered the wall in front of it. SOTC_BG_DEPTH=0: the old painter's order.
+                static const bool bgDepthOff = [] { const char *v = std::getenv("SOTC_BG_DEPTH"); return v && *v == '0'; }();
+#if !defined(PS2X_NATIVE_VITA)
+                if (cutBackground && boundProgram == mainProgram)
+                    glUniform1f(uniform(true, "uClipNear"), fog.backgroundNear);
+#endif
+                // The sky dome is the layer's first model, some 40000 units away (the landscape ends near 3500): drawn in
+                // order behind everything, as depth cannot tell its own layers apart that far (hatching).
+                if (backgroundOnly && d.state.background && domePrefix)
+                {
+                    if (!domeClip)
+                        domeClip = d.clip;
+                    domePrefix = std::memcmp(d.clip, domeClip, sizeof(d.clip)) == 0;
+                }
+                const bool backgroundDepth = backgroundOnly && !bgDepthOff && d.state.background && !d.state.screen && !domePrefix;
+                const int depthTest = backdrop && !backgroundDepth && !d.state.screenDepthTest ? 0 : 1;
+                const int depthMask = backgroundDepth ? (d.state.blend == native_renderer::Blend::Additive || d.state.noDepthWrite ? 0 : 1)
+                                      : d.state.screenDepthTest ? 0
                                       : backdrop ? cache.depthMask
                                                : (d.state.overlay || (d.state.blend == native_renderer::Blend::Additive && !d.state.writeDepth) || d.state.noDepthWrite ? 0 : 1);
                 if (depthTest != cache.depthTest)
@@ -2394,7 +2437,7 @@ float4 main(float4 vUV : TEXCOORD0, uniform sampler2D uSrc, uniform sampler2D uS
                     }
                 }
                 const float misc[4] = {d.state.fresnel ? -1.0f : (d.state.lit ? 1.0f : 0.0f), d.state.opacity, d.state.uvOffset[0], d.state.uvOffset[1]};
-                const bool vertexFog = fog.vertexFog && !d.state.screen && (!d.state.background || bgFog);
+                const bool vertexFog = fog.vertexFog && !d.state.screen && !d.state.noVertexFog && (!d.state.background || bgFog);
 #if defined(PS2X_NATIVE_VITA)
                 // No depth texture for the zFog pass: the world before its layer
                 // blends to the background by its own depth here, slice for slice.
@@ -2559,6 +2602,9 @@ float4 main(float4 vUV : TEXCOORD0, uniform sampler2D uSrc, uniform sampler2D uS
         if (fogOn)
         {
             pass(background, true);
+#if !defined(PS2X_NATIVE_VITA)
+            glDisable(GL_CLIP_DISTANCE0);
+#endif
             copy(background, backgroundSmall); // bgEnd: reduced to 256 x 256
         }
 #if defined(PS2X_NATIVE_VITA)

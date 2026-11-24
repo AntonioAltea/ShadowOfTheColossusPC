@@ -1693,6 +1693,7 @@ namespace sotc_native
         }
         // The native renderer redoes it as one pass over the picture by depth
         // (native_renderer::Fog); SOTC_NATIVE_ZFOG=0 leaves it out.
+        g_fog.backgroundNear = std::max(farDistance - margin - width - real(0x118C478u), 10.0f);
         const bool zFogOn = native_renderer::tuning().zFog;
         if (zFogOn && slices > 0 && width > 0.0f)
         {
@@ -4245,6 +4246,8 @@ namespace sotc_native
                                  static_cast<int>(surfaceBlend(s)), static_cast<unsigned long long>(state.texture), surface, word(s + 0x18u));
             }
             state.background = state.order == 1u;            // the sky
+            // Bit 7 is the PRIM's FGE in the GIF tag of every surface.
+            state.noVertexFog = !((word(s + 0x18u) >> 7) & 1u);
             // modelDisp binds the off-screen boss mask for bit-17 surfaces,
             // not the placeholder texture carried by the material.
             uint64_t bossMask = 0;
