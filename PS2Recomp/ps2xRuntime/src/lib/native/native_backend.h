@@ -5,7 +5,9 @@
 
 #include "runtime/native_renderer.h"
 
+#include <cstdlib>
 #include <functional>
+#include <utility>
 #include <mutex>
 
 namespace native_renderer::detail
@@ -18,6 +20,23 @@ namespace native_renderer::detail
         std::vector<uint8_t> pixels;
         uint32_t width = 0, height = 0;
         uint64_t revision = 0;
+        // The frame before, when the host had not taken it yet: the game (59.94 Hz) and the screen (60 Hz)
+        // drift past each other, and replacing an unread frame dropped pictures in waves. SOTC_FRAME_QUEUE=0: off.
+        std::vector<uint8_t> pending;
+        uint32_t pendingWidth = 0, pendingHeight = 0;
+        uint64_t pendingRevision = 0, taken = 0;
+
+        // Call with the mutex held, before writing a new frame into pixels.
+        void keepUnread()
+        {
+            static const bool off = [] { const char *v = std::getenv("SOTC_FRAME_QUEUE"); return v && *v == '0'; }();
+            if (off || !revision || taken >= revision)
+                return;
+            std::swap(pending, pixels);
+            pendingWidth = width;
+            pendingHeight = height;
+            pendingRevision = revision;
+        }
 
         FrameRead read(std::vector<uint8_t> &rgba, uint32_t &w, uint32_t &h, uint64_t *seen)
         {
@@ -28,9 +47,19 @@ namespace native_renderer::detail
             h = height;
             if (seen && *seen == revision)
                 return FrameRead::Unchanged;
+            if (seen && pendingRevision > *seen && pendingWidth == width && pendingHeight == height)
+            {
+                std::swap(rgba, pending);
+                *seen = taken = pendingRevision;
+                pendingRevision = 0;
+                return FrameRead::Updated;
+            }
             rgba = pixels;
             if (seen)
-                *seen = revision;
+            {
+                *seen = taken = revision;
+                pendingRevision = 0;
+            }
             return FrameRead::Updated;
         }
     };

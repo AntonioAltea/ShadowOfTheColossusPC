@@ -3053,6 +3053,7 @@ float4 main(float4 vUV : TEXCOORD0, uniform sampler2D uSrc, uniform sampler2D uS
         glReadPixels(0, 0, static_cast<GLsizei>(w), static_cast<GLsizei>(h), GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
         std::lock_guard<std::mutex> lock(output.mutex);
+        output.keepUnread();
         output.pixels.resize(pixels.size());
         const size_t row = static_cast<size_t>(w) * 4u;
         for (uint32_t y = 0; y < h; ++y)
