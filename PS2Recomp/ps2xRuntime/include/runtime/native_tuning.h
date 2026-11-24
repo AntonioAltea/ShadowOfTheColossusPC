@@ -128,7 +128,8 @@ namespace native_renderer
         bool hdInterface = true;    // the HD pack's menus, subtitles and icons (SOTC_HD_INTERFACE=0/1)
         float modOutfit = 0.0f, modCloak = 0.0f, modAgro = 0.0f, modMono = 0.0f, modItems = 0.0f, modSky = 0.0f, modIcons = 0.0f, modGameOver = 0.0f, modTrail = 0.0f; // 0: none
         bool modHeadband = false, modHintsOff = false;
-        float colourFilter = 0.0f, filterStrength = 1.0f, tvFilter = 0.0f, tvStrength = 1.0f; // over the picture's own look (filters/, OpenGL), and how much
+        float colourFilter = 0.0f, filterStrength = 1.0f; // colours over the picture's own look (filters/, OpenGL), and how much
+        bool tvFilter = false;      // an old television over it all
         bool autosave = true;       // a save state every 10 minutes, three in turn (SOTC_AUTOSAVE=0/1)
     };
 

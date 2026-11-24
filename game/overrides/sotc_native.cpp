@@ -656,6 +656,8 @@ namespace sotc_native
 
     bool decodeTextureReference(uint32_t header, std::vector<uint8_t> &rgba, uint32_t &decodedOut);
 
+    std::unordered_map<uint64_t, uint32_t> g_hdOriginalWidth; // by id: the game's own texture's width
+
     // The HD pack's texture for the one with content key `key`, when it has
     // one and it is on the GPU; 0: the game's own (asked for meanwhile).
     uint64_t hdTexture(uint32_t header, uint64_t key)
@@ -801,6 +803,7 @@ namespace sotc_native
             h.frame = g_frame;
             return e.id;
         }
+        g_hdOriginalWidth[e.id] = 1u << ((format >> 16) & 0xFu);
         sotc_hd::Loader::get().request(e.id, *e.path);
         return hold();
     }
@@ -844,6 +847,20 @@ namespace sotc_native
         sotc_hd::Blob blob;
         while (sotc_hd::Loader::get().take(blob))
         {
+            // Hair and leaves: the game draws them without mip levels, their
+            // strands kept at any distance. Levels below the original's size
+            // blurred them into a veil.
+            if (const auto own = g_hdOriginalWidth.find(blob.id); blob.alphaMin < 100u && own != g_hdOriginalWidth.end())
+            {
+                uint32_t keep = 1u;
+                for (uint32_t w = blob.width; w > own->second && keep < blob.levels; w /= 2u)
+                    ++keep;
+                size_t bytes = 0;
+                for (uint32_t l = 0, w = blob.width, h = blob.height; l < keep; ++l, w = std::max(1u, w / 2u), h = std::max(1u, h / 2u))
+                    bytes += static_cast<size_t>((w + 3u) / 4u) * ((h + 3u) / 4u) * 16u;
+                blob.levels = keep;
+                blob.bytes.resize(std::min(bytes, blob.bytes.size()));
+            }
             if (!native_renderer::hasTexture(blob.id))
                 native_renderer::uploadCompressed(blob.id, blob.width, blob.height, blob.bytes.data(), blob.bytes.size(), blob.levels, blob.alphaMin, blob.alphaMax);
             if (blob.bytes.size() >= budget)

@@ -312,10 +312,9 @@ namespace native_renderer
              "O visual inteiro de uma vez. PS2 original: o mais perto do console. Remaster: o clima dele com opções modernas. Moderno: nítido e limpo.", nullptr, &Tuning::pictureProfile, 0.0f, 3.0f, 1.0f, nullptr},
             {"ps2_look", "PS2 softness", "Suavidade de PS2", "The softness, glow and fine grain of the picture on a television of its time. 0: off.",
              "A suavidade, o brilho e o grão fino da imagem numa TV da época. 0: desligado.", nullptr, &Tuning::ps2Look, 0.0f, 1.0f, 0.1f, "SOTC_PS2_LOOK"},
-            {"picture_filter", "Colour filter", "Filtro de cor", "The colours of Sad Origami's ReShade presets, over the picture.", "As cores dos presets de ReShade do Sad Origami, por cima da imagem.", nullptr, &Tuning::colourFilter, 0.0f, 4.0f, 1.0f, nullptr},
+            {"picture_filter", "Colour filter", "Filtro de cor", "The colours of Sad Origami's ReShade presets, over the picture.", "As cores dos presets de ReShade do Sad Origami, por cima da imagem.", nullptr, &Tuning::colourFilter, 0.0f, 6.0f, 1.0f, nullptr},
             {"picture_filter_strength", "Colour strength", "Força da cor", "How much of the colour filter.", "Quanto do filtro de cor.", nullptr, &Tuning::filterStrength, 0.0f, 1.0f, 0.1f, nullptr},
-            {"tv_filter", "TV filter", "Filtro de TV", "An old television (Cathode) or video camera (Handycam).", "Uma TV antiga (Cathode) ou uma câmera de vídeo (Handycam).", nullptr, &Tuning::tvFilter, 0.0f, 4.0f, 1.0f, nullptr},
-            {"tv_strength", "TV strength", "Força da TV", "How much of the TV filter.", "Quanto do filtro de TV.", nullptr, &Tuning::tvStrength, 0.0f, 1.0f, 0.1f, nullptr},
+            {"tv_on", "TV filter", "Filtro de TV", "An old television: curved glass, scan lines, video tape. Its colours are not changed.", "Uma TV antiga: vidro curvo, linhas, fita de vídeo. As cores não mudam.", &Tuning::tvFilter, nullptr, 0, 1, 1, nullptr},
             {"rumble", "Vibration", "Vibração", "The controller's motors, times the game's own. 0: off.", "Os motores do controle, vezes os do jogo. 0: desligado.",
              nullptr, &Tuning::rumble, 0.0f, 1.5f, 0.25f, "SOTC_RUMBLE"},
             {"autosave", "Automatic save states", "Estados automáticos", "A save state every 10 minutes of play, in three slots of their own in turn. The memory card is not touched.",
@@ -583,12 +582,9 @@ namespace native_renderer
                 return {4, modGameOverNames, modGameOverNames};
             if (item.number == &Tuning::modTrail)
                 return {6, modTrailNames, modTrailNames};
-            static const char *filterNames[] = {"Off", "Olive", "Mortar", "Scarlet", "Scarlet intense"};
-            static const char *tvNames[] = {"Off", "Cathode A", "Cathode B", "Cathode C", "Handycam"};
+            static const char *filterNames[] = {"Off", "Olive", "Mortar", "Scarlet", "Scarlet intense", "Cathode", "Handycam"};
             if (item.number == &Tuning::colourFilter)
-                return {5, filterNames, filterNames};
-            if (item.number == &Tuning::tvFilter)
-                return {5, tvNames, tvNames};
+                return {7, filterNames, filterNames};
             static const char *pictureEn[] = {"Custom", "PS2 original", "Remaster", "Modern"};
             static const char *picturePt[] = {"Personalizado", "PS2 original", "Remaster", "Moderno"};
             static const char *shadowEn[] = {"Soft (PS2)", "Sharper", "Sharpest"};

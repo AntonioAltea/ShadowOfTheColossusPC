@@ -376,60 +376,10 @@ void main()
         c = mix(c, c * c * (3.0 - 2.0 * c), uA.x);
         oColor = graded(mix(vec3(dot(c, vec3(0.299, 0.587, 0.114))), c, uA.y));
     }
-    else if (uMode == 23) // ReShade presets, colour: uFx[0] sharpen, bloom, curve, saturation; [1] compression, ambient, overlay, vignette; [2] letterbox aspect, wide glow, flare, adaptation; [3].x picture aspect
+    else if (uMode == 23) // colour filter: the table's colours, uGradeHow of them
     {
-        vec2 px = 1.0 / vec2(textureSize(uSrc, 0));
-        vec3 base = texture(uSrc, vUV).rgb, c = base;
-        if (uFx[0].x > 0.0)
-        {
-            vec3 n = (texture(uSrc, vUV + vec2(px.x, 0.0)).rgb + texture(uSrc, vUV - vec2(px.x, 0.0)).rgb + texture(uSrc, vUV + vec2(0.0, px.y)).rgb +
-                      texture(uSrc, vUV - vec2(0.0, px.y)).rgb) * 0.25;
-            c = clamp(c + clamp((c - n) * uFx[0].x, -0.25, 0.25), 0.0, 1.0);
-        }
-        vec3 soft = texture(uSrc2, vUV).rgb;
-        vec3 b = pow(max(soft, 0.0), vec3(uFx[0].z));
-        b = max(mix(vec3(dot(b, vec3(0.333))), b, uFx[0].w), 0.0);
-        c += b * uFx[0].y;
-        if (uFx[2].y > 0.0) // the light around (AmbientLight)
-        {
-            vec3 w = vec3(0.0);
-            for (int i = 0; i < 8; ++i)
-                w += texture(uSrc2, vUV + 0.12 * vec2(cos(0.785 * float(i)), sin(0.785 * float(i)))).rgb;
-            c += max(w / 8.0 - 0.05, 0.0) * uFx[2].y;
-        }
-        if (uFx[2].z > 0.0) // lens ghosts of the lights
-            for (int i = 1; i <= 3; ++i)
-            {
-                vec2 g = 0.5 + (0.5 - vUV) * (0.35 * float(i));
-                c += max(texture(uSrc2, g).rgb - 0.75, 0.0) * uFx[2].z * 0.33;
-            }
-        if (uFx[1].x > 0.0) // compression of the lights (qUINT)
-        {
-            c = pow(max(c, 0.0), vec3(uFx[1].x));
-            c = pow(c / (1.0 + c), vec3(1.0 / uFx[1].x));
-        }
-        if (uFx[2].w > 0.0) // brightening of dark pictures (EyeAdaption)
-        {
-            float m = 0.0;
-            for (int i = 0; i < 16; ++i)
-                m += dot(textureLod(uSrc2, (vec2(i & 3, i >> 2) + 0.5) / 4.0, 0.0).rgb, vec3(0.299, 0.587, 0.114)) / 16.0;
-            float up = clamp((0.393 - m) * uFx[2].w, 0.0, 0.4), l = dot(c, vec3(0.299, 0.587, 0.114));
-            c += c * (1.0 - clamp(c, 0.0, 1.0)) * up * (l < 0.5 ? mix(0.161, 0.265, l * 2.0) : mix(0.265, 0.771, l * 2.0 - 1.0)) * 4.0;
-        }
-        c = clamp(c, 0.0, 1.0);
-        c = texture(uGrade, (c * 31.0 + 0.5) / 32.0).rgb;
-        c = c + uFx[1].y * (1.0 - c);
-        if (uFx[1].z > 0.0)
-        {
-            vec4 o = texture(uOverlay, vec2(vUV.x, 1.0 - vUV.y));
-            c = mix(c, o.rgb, o.a * uFx[1].z);
-        }
-        if (uFx[1].w > 0.0)
-            c *= 1.0 - smoothstep(0.6, 2.2, length((vUV - 0.5) * 2.0)) * uFx[1].w;
-        c = mix(base, c, uGradeHow);
-        if (uFx[2].x > 0.0 && abs(vUV.y - 0.5) > 0.5 * uFx[3].x / uFx[2].x)
-            c = vec3(0.0);
-        oColor = vec4(c, 1.0);
+        vec3 c = clamp(texture(uSrc, vUV).rgb, 0.0, 1.0);
+        oColor = vec4(mix(c, texture(uGrade, (c * 31.0 + 0.5) / 32.0).rgb, uGradeHow), 1.0);
     }
     else if (uMode == 24) // ReShade presets, the tape (VHS Pro, VHS RA): uFx[4] time, film grain, line noise, smear; uFx[3].y pillar width, .z lens
     {
@@ -963,8 +913,8 @@ float4 main(float4 vUV : TEXCOORD0, uniform sampler2D uSrc, uniform sampler2D uS
         Target prefix[3], hazeSmall[3]; // one reduced haze source per bounded prefix slot
         Target shownFrame[2]; // what the host shows, alternately (the GPU draws later: never the target being drawn)
         int shownIndex = 0;
-        GLuint gradeTexture[2] = {}; // the colour filter's and the television's tables
-        int gradeLoaded[2] = {};
+        GLuint gradeTexture = 0;  // the colour filter's table
+        int gradeLoaded = 0;
         Target fxTarget[4];       // the presets' stages and the tape's last picture
         Target lookSmall[2];     // the PS2 look's soft copy
         float groundSent = 0.0f; // mainProgram's uGround
@@ -3493,56 +3443,35 @@ float4 main(float4 vUV : TEXCOORD0, uniform sampler2D uSrc, uniform sampler2D uS
             }
         }
         const native_renderer::Tuning &look = native_renderer::tuning();
-        // Over the picture's own look: a colour filter and a television, after
-        // Sad Origami's ReShade presets (their values and tables).
-        struct Overlook
+        // Over the picture's own look: a colour filter (the tables of Sad Origami's
+        // ReShade presets, colour alone), then an old television.
+        static const char *const colours[] = {"olive", "mortar", "scarlet-natural", "scarlet-intense", "cathode", "handycam"};
+        const int wanted = std::clamp(static_cast<int>(look.colourFilter + 0.5f), 0, 6);
+        if (wanted != gradeLoaded)
         {
-            const char *table;
-            float fx[12]; // as mode 23's uFx[0..2]
-            float pillar, lens, tube, grain, lines, smear;
-        };
-        static const Overlook colours[] = {
-            {"olive", {0.8f, 0.14f, 1.4f, 2.5f, 4.0f, 0.03f, 0, 0, 0, 0, 0, 0}, 0, 0, 0, 0, 0, 0},
-            {"mortar", {1.0f, 0.16f, 1.4f, 1.0f, 3.0f, 0.03f, 0, 0, 0, 0, 0.25f, 0}, 0, 0, 0, 0, 0, 0},
-            {"scarlet-natural", {0.63f, 0.22f, 0.6f, 1.4f, 1.8f, 0, 0, 0.6f, 0, 0.10f, 0, 0}, 0, 0, 0, 0, 0, 0},
-            {"scarlet-intense", {0.63f, 0.22f, 0.6f, 1.4f, 1.8f, 0, 0, 0.6f, 0, 0.10f, 0, 0}, 0, 0, 0, 0, 0, 0},
-        };
-        static const Overlook televisions[] = {
-            {"cathode", {0, 0.12f, 1.6f, 1.0f, 0, 0, 0, 0, 0, 0, 0, 1.125f}, 0, 0, 1, 0.01f, 0, 0.4f},
-            {"cathode", {0, 0.12f, 1.6f, 1.0f, 0, 0, 0, 0, 0, 0, 0, 1.125f}, 0, 0, 2, 0.01f, 0, 0.4f},
-            {"cathode", {0, 0.12f, 1.6f, 1.0f, 0, 0, 0, 0, 0, 0, 0, 1.125f}, 0, 0, 3, 0.01f, 0, 0.4f},
-            {"handycam", {0.64f, 0.12f, 1.6f, 1.0f, 0, 0, 0, 0, 0, 0, 0, 1.125f}, 0.83f, 0.10f, 0, 0, 0.81f, 0.5f},
-        };
-        const int wantedTable[2] = {std::clamp(static_cast<int>(look.colourFilter + 0.5f), 0, 4), std::clamp(static_cast<int>(look.tvFilter + 0.5f), 0, 4)};
-        for (int t = 0; t < 2; ++t)
-        {
-            if (wantedTable[t] == gradeLoaded[t])
-                continue;
-            gradeLoaded[t] = wantedTable[t];
-            if (gradeTexture[t])
-                glDeleteTextures(1, &gradeTexture[t]);
-            gradeTexture[t] = 0;
-            if (!wantedTable[t])
-                continue;
+            gradeLoaded = wanted;
+            if (gradeTexture)
+                glDeleteTextures(1, &gradeTexture);
+            gradeTexture = 0;
             std::vector<char> table(32u * 32u * 32u * 3u);
-            const char *name = (t ? televisions : colours)[wantedTable[t] - 1].table;
-            if (std::ifstream file(std::string("filters/") + name + ".lut", std::ios::binary); file.read(table.data(), static_cast<std::streamsize>(table.size())))
-            {
-                glActiveTexture(GL_TEXTURE0 + 4);
-                glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-                glGenTextures(1, &gradeTexture[t]);
-                glBindTexture(GL_TEXTURE_3D, gradeTexture[t]);
-                glTexImage3D(GL_TEXTURE_3D, 0, GL_RGB8, 32, 32, 32, 0, GL_RGB, GL_UNSIGNED_BYTE, table.data());
-                for (const GLenum q : {GL_TEXTURE_MIN_FILTER, GL_TEXTURE_MAG_FILTER})
-                    glTexParameteri(GL_TEXTURE_3D, q, GL_LINEAR);
-                for (const GLenum q : {GL_TEXTURE_WRAP_S, GL_TEXTURE_WRAP_T, GL_TEXTURE_WRAP_R})
-                    glTexParameteri(GL_TEXTURE_3D, q, GL_CLAMP_TO_EDGE);
-                glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
-                glActiveTexture(GL_TEXTURE0);
-            }
+            if (wanted)
+                if (std::ifstream file(std::string("filters/") + colours[wanted - 1] + ".lut", std::ios::binary); file.read(table.data(), static_cast<std::streamsize>(table.size())))
+                {
+                    glActiveTexture(GL_TEXTURE0 + 4);
+                    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+                    glGenTextures(1, &gradeTexture);
+                    glBindTexture(GL_TEXTURE_3D, gradeTexture);
+                    glTexImage3D(GL_TEXTURE_3D, 0, GL_RGB8, 32, 32, 32, 0, GL_RGB, GL_UNSIGNED_BYTE, table.data());
+                    for (const GLenum q : {GL_TEXTURE_MIN_FILTER, GL_TEXTURE_MAG_FILTER})
+                        glTexParameteri(GL_TEXTURE_3D, q, GL_LINEAR);
+                    for (const GLenum q : {GL_TEXTURE_WRAP_S, GL_TEXTURE_WRAP_T, GL_TEXTURE_WRAP_R})
+                        glTexParameteri(GL_TEXTURE_3D, q, GL_CLAMP_TO_EDGE);
+                    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+                    glActiveTexture(GL_TEXTURE0);
+                }
             boundFbo = boundProgram = ~0u;
         }
-        bool colouring = gradeTexture[0] != 0 && look.filterStrength > 0.0f, television = gradeTexture[1] != 0 && look.tvStrength > 0.0f;
+        bool colouring = gradeTexture != 0 && look.filterStrength > 0.0f, television = look.tvFilter;
         if (colouring || television)
         {
             bool made = true;
@@ -3595,57 +3524,36 @@ float4 main(float4 vUV : TEXCOORD0, uniform sampler2D uSrc, uniform sampler2D uS
         };
         if (colouring || television)
         {
-            const auto stage = [&](int mode, const Overlook &p, float share, GLuint table, const Target &from, const Target &to)
+            const auto stage = [&](int mode, float share, const Target &from, const Target &to)
             {
                 float fx[20] = {};
-                std::memcpy(fx, p.fx, sizeof(p.fx));
-                fx[12] = 1.6f;
-                fx[13] = p.pillar > 0.0f ? 1.0f + (p.pillar - 1.0f) * share : 0.0f, fx[14] = p.lens * share, fx[15] = p.tube;
-                fx[16] = static_cast<float>(arenaFrame % 36000u) / 60.0f, fx[17] = p.grain, fx[18] = p.lines, fx[19] = p.smear;
+                fx[15] = 1.0f; // the tube
+                fx[16] = static_cast<float>(arenaFrame % 36000u) / 60.0f, fx[17] = 0.01f, fx[19] = 0.4f; // the tape
                 useQuad(mode);
                 glUniform1i(uniform(false, "uGrade"), 4);
-                glUniform1i(uniform(false, "uOverlay"), 5);
                 glUniform1i(uniform(false, "uPrev"), 6);
                 glUniform1f(uniform(false, "uGradeHow"), share);
                 glUniform4fv(uniform(false, "uFx"), 5, fx);
                 bindTexture(6, fxTarget[2].texture);
                 glActiveTexture(GL_TEXTURE0 + 4);
-                glBindTexture(GL_TEXTURE_3D, table);
+                glBindTexture(GL_TEXTURE_3D, gradeTexture);
                 bindTexture(1, lookSmall[0].texture);
                 bindTexture(0, from.texture);
                 quad(to, mode, QuadBlend::None);
-            };
-            const auto soften = [&](const Target &from)
-            {
-                copy(from, lookSmall[0]);
-                const float across[4] = {1.6f / 128.0f, 0, 0, 0}, down[4] = {0, 1.6f / 112.0f, 0, 0};
-                for (int i = 0; i < 2; ++i)
-                {
-                    bindTexture(0, lookSmall[0].texture);
-                    quad(lookSmall[1], 1, QuadBlend::None, across);
-                    bindTexture(0, lookSmall[1].texture);
-                    quad(lookSmall[0], 1, QuadBlend::None, down);
-                }
             };
             ownLook(fxTarget[3]);
             const Target *now = &fxTarget[3];
             if (colouring)
             {
                 const Target &to = television ? fxTarget[0] : out;
-                soften(*now);
-                stage(23, colours[wantedTable[0] - 1], look.filterStrength, gradeTexture[0], *now, to);
+                stage(23, look.filterStrength, *now, to);
                 now = &to;
             }
             if (television)
             {
-                const Overlook &p = televisions[wantedTable[1] - 1];
-                const Target &taped = p.tube > 0.0f ? fxTarget[0] : out;
-                soften(*now);
-                stage(23, p, look.tvStrength, gradeTexture[1], *now, fxTarget[1]);
-                stage(24, p, look.tvStrength, gradeTexture[1], fxTarget[1], taped);
-                copy(taped, fxTarget[2]);
-                if (p.tube > 0.0f)
-                    stage(25, p, look.tvStrength, gradeTexture[1], fxTarget[0], out);
+                stage(24, 1.0f, *now, fxTarget[1]);
+                copy(fxTarget[1], fxTarget[2]);
+                stage(25, 1.0f, fxTarget[1], out);
             }
         }
         else

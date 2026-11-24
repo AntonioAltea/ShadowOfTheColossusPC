@@ -291,7 +291,7 @@ namespace
                                 tabs[t].push_back({Row::Tuning, static_cast<int>(i)});
                         }
             };
-            take(0, {"picture_profile", "ps2_look", "fog_amount", "picture_filter", "picture_filter_strength", "tv_filter", "tv_strength", "color_contrast", "color_brightness", "color_saturation"});
+            take(0, {"picture_profile", "ps2_look", "fog_amount", "picture_filter", "picture_filter_strength", "tv_on", "color_contrast", "color_brightness", "color_saturation"});
             heading(1, "Resolution");
             take(1, {"quality_preset", "render_scale"});
 #ifdef PS2X_DESKTOP_VIDEO
