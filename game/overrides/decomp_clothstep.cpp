@@ -15,9 +15,14 @@
 #include "sotc_decomp.h"
 
 #include "ps2_runtime_macros.h"
+#include "runtime/ee_scheduler.h"
+#include "runtime/native_tuning.h"
 #include "runtime/ps2_memory.h"
 
+#include <algorithm>
 #include <cstring>
+#include <map>
+#include <vector>
 
 namespace decomp_clothstep
 {
@@ -88,6 +93,124 @@ namespace decomp_clothstep
             e += 32u;
         } while (n != -1);
         return sum;
+    }
+
+    // Hair at the PS2's rate. The step's amounts (wind, random push, damping,
+    // the pull of the pins) are per step, balanced for 30 fps: at 60 the hair
+    // jerks more. Steady mane (SOTC_HAIR_RATE): Agro's mane steps once every 1/30 s with that dt,
+    // and the mesh of the frames in between is drawn from the two last steps
+    // (both are in the cloth's buffers), hung from the bones of the frame.
+    // At 30 fps it is the game's own picture. The simulation's memory is not
+    // touched by the drawing.
+    struct Slow
+    {
+        float acc = 0.0f, last = 0.0f;
+    };
+    struct Shown
+    {
+        uint32_t owner = 0;
+        float alpha = 1.0f;
+        uint64_t tick = 0;
+    };
+    std::map<uint32_t, Slow> g_slow;   // by owner
+    std::map<uint32_t, Shown> g_shown; // by cloth
+    std::map<uint32_t, uint32_t> g_owner;
+    void noteOwner(uint32_t cloth, uint32_t owner) { g_owner[cloth] = owner; }
+
+    // GetClothDynamics(a0 object, a1 full, a2, f12 dt, f13 1 / dt): the cloths of one object.
+    void dynamics(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const Ram ram{rdram};
+        const auto original = sotc_decomp::recompiled(0x01137A68u);
+        const uint32_t object = GPR_U32(ctx, 4);
+        const float dt = ctx->f[12];
+        // GetLayoutClass: the kinds whose class is in the object itself.
+        const uint32_t kind = static_cast<uint32_t>(rdram[(object + 8u) & PS2_RAM_MASK]) - 9u;
+        uint32_t owner = 0;
+        if (native_renderer::tuning().steadyMane && kind < 14u)
+        {
+            const uint32_t at = ram.u32(0x01194070u + kind * 4u);
+            owner = at == 0x010F1A98u ? object + 0x90u : at == 0x010F1A58u ? object + 0x20u : 0u;
+        }
+        if (!owner || !(dt > 0.0f) || GPR_U32(ctx, 5) != 1u || !ram.u32(owner + 0x180u))
+            return original(rdram, ctx, runtime);
+        const uint32_t group = ram.u32(owner + 0x178u), first = ram.u32(group);
+        const int count = static_cast<int16_t>(ram.u32(group + 4u) & 0xFFFFu);
+        bool take = !ram.u32(group + 0x14u) && count > 0 && count < 32;
+        for (int i = 0; take && i < count; ++i)
+        {
+            const uint32_t cloth = first + 0x90u * i, grid = ram.u32(cloth);
+            take = (ram.u32(grid) & 0xFFFFu) == 0u && ram.u32(grid + 8u) >= 2u && ram.u32(grid + 8u) <= 32u && ram.u32(grid + 4u) <= 32u;
+            const auto o = g_owner.find(cloth);
+            take = take && o != g_owner.end() && o->second == owner;
+            if (take && i == 0) // Agro's mane: five grids, the first 7 x 4
+                take = count == 5 && ram.u32(grid + 4u) == 7u && ram.u32(grid + 8u) == 4u;
+        }
+        if (!take)
+        {
+            g_slow.erase(owner);
+            return original(rdram, ctx, runtime);
+        }
+        Slow &slow = g_slow[owner];
+        slow.acc += dt;
+        const bool step = slow.last == 0.0f || slow.acc + 0.5f * dt > 1.0f / 30.0f;
+        const float since = step ? 0.0f : slow.acc;
+        if (step)
+        {
+            slow.last = slow.acc;
+            slow.acc = 0.0f;
+        }
+        const float alpha = std::min(1.0f, (since + dt) / slow.last);
+        const uint64_t tick = runtime->eeScheduler().currentVSyncTick();
+        for (int i = 0; i < count; ++i)
+            g_shown[first + 0x90u * i] = {owner, alpha, tick};
+        if (step)
+        {
+            ctx->f[12] = slow.last;
+            ctx->f[13] = 1.0f / slow.last;
+            return original(rdram, ctx, runtime);
+        }
+        SET_GPR_U32(ctx, 2, 1u);
+        returnTo(ctx);
+    }
+
+    // The positions the mesh of a cloth is drawn with, in its buffer; what
+    // was there in saved (restoreShown). False: the simulation's own.
+    bool show(uint8_t *rdram, PS2Runtime *runtime, uint32_t cloth, std::vector<__m128> &saved)
+    {
+        const auto it = g_shown.find(cloth);
+        if (it == g_shown.end() || it->second.alpha >= 1.0f && g_slow[it->second.owner].acc == 0.0f
+            || runtime->eeScheduler().currentVSyncTick() - it->second.tick > 4u)
+            return false;
+        const Ram ram{rdram};
+        const uint32_t grid = ram.u32(cloth), bones = ram.u32(it->second.owner + 0x15Cu);
+        const uint32_t rows = ram.u32(grid + 4u), cols = ram.u32(grid + 8u);
+        uint32_t row = ram.u32(cloth + 12u), pins = ram.u32(grid + 40u);
+        const __m128 k = _mm_set1_ps(it->second.alpha);
+        __m128 acc{}, vf13{};
+        for (uint32_t i = 0; i < rows; ++i, row += 24u, pins += 36u)
+        {
+            const uint32_t out = ram.u32(row + 16u), prev = ram.u32(row + 20u);
+            const __m128 root = pin(ram, pins + 12u, bones, acc, vf13), out0 = ram.q(out), prev0 = ram.q(prev);
+            for (uint32_t c = 0; c < cols; ++c)
+            {
+                const __m128 now = ram.q(out + c * 16u), a = _mm_sub_ps(ram.q(prev + c * 16u), prev0), b = _mm_sub_ps(now, out0);
+                saved.push_back(now);
+                __m128 v = _mm_add_ps(root, _mm_add_ps(a, _mm_mul_ps(_mm_sub_ps(b, a), k)));
+                ram.putq(out + c * 16u, _mm_blend_ps(v, now, 8));
+            }
+        }
+        return true;
+    }
+    void restoreShown(uint8_t *rdram, uint32_t cloth, const std::vector<__m128> &saved)
+    {
+        const Ram ram{rdram};
+        const uint32_t grid = ram.u32(cloth), rows = ram.u32(grid + 4u), cols = ram.u32(grid + 8u);
+        uint32_t row = ram.u32(cloth + 12u);
+        size_t n = 0;
+        for (uint32_t i = 0; i < rows; ++i, row += 24u)
+            for (uint32_t c = 0; c < cols; ++c)
+                ram.putq(ram.u32(row + 16u) + c * 16u, saved[n++]);
     }
 
     void clothStep(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
@@ -203,6 +326,7 @@ namespace decomp_clothstep
             }
         }
 
+        noteOwner(a0, owner);
         ctx->f[0] = f0;
         ctx->f[1] = f1;
         ctx->f[2] = f2;
@@ -231,3 +355,4 @@ namespace decomp_clothstep
 }
 
 SOTC_DECOMP_FUNCTION(0x011370E8u, clothStep, decomp_clothstep::clothStep);
+SOTC_DECOMP_FUNCTION(0x01137A68u, clothDynamics, decomp_clothstep::dynamics);

@@ -131,6 +131,8 @@ namespace native_renderer
         float colourFilter = 0.0f, filterStrength = 1.0f; // colours over the picture's own look (filters/, OpenGL), and how much
         bool tvFilter = false;      // an old television over it all
         bool autosave = true;       // a save state every 10 minutes, three in turn (SOTC_AUTOSAVE=0/1)
+        bool clothMaterial = true; // hair and cloth with their surface's TEST, mips and clamp (SOTC_MESH_MATERIAL=0/1)
+        bool steadyMane = true; // Agro's mane simulated at the PS2's 30 steps a second, drawn in between (SOTC_HAIR_RATE=0/1)
     };
 
     // The settings (made from the environment on first use). Inline: the

@@ -18,6 +18,13 @@
 #include "runtime/ps2_memory.h"
 
 #include <cstring>
+#include <vector>
+
+namespace decomp_clothstep
+{
+    bool show(uint8_t *rdram, PS2Runtime *runtime, uint32_t cloth, std::vector<__m128> &saved);
+    void restoreShown(uint8_t *rdram, uint32_t cloth, const std::vector<__m128> &saved);
+}
 
 namespace decomp_cloth
 {
@@ -66,6 +73,8 @@ namespace decomp_cloth
             sotc_decomp::recompiled(kCloth)(rdram, ctx, runtime);
             return;
         }
+        std::vector<__m128> saved;
+        const bool shown = decomp_clothstep::show(rdram, runtime, o, saved);
         // The prologue: the frame, the saved registers, +0 the model, +4 the row pointer.
         const uint32_t sp = GPR_U32(ctx, 29) - 0x60u;
         SET_GPR_U32(ctx, 29, sp);
@@ -122,6 +131,8 @@ namespace decomp_cloth
             }
         }
         ctx->vu0_vf[7] = vf7;
+        if (shown)
+            decomp_clothstep::restoreShown(rdram, o, saved);
 
         // 0x11381c8: the layer index, then the recompiled code from 0x1138200.
         const uint32_t a0 = ram.u32(model + 0x144u);

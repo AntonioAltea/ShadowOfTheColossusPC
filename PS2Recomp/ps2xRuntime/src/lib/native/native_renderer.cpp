@@ -105,6 +105,8 @@ namespace native_renderer
         d.rumble = std::clamp(number("SOTC_RUMBLE", d.rumble), 0.0f, 1.5f);
         d.shadowDetail = std::clamp(std::round(number("SOTC_SHADOW_DETAIL", d.shadowDetail)), 0.0f, 2.0f);
         d.groundVariation = number("SOTC_GROUND_VARIATION", d.groundVariation) != 0.0f;
+        d.clothMaterial = number("SOTC_MESH_MATERIAL", d.clothMaterial) != 0.0f;
+        d.steadyMane = number("SOTC_HAIR_RATE", d.steadyMane) != 0.0f;
         d.ps2Look = std::clamp(number("SOTC_PS2_LOOK", d.ps2Look), 0.0f, 1.0f);
         d.hdInterface = number("SOTC_HD_INTERFACE", d.hdInterface) != 0.0f;
         d.autosave = number("SOTC_AUTOSAVE", d.autosave) != 0.0f;
@@ -321,6 +323,10 @@ namespace native_renderer
              "Um estado a cada 10 minutos, em três espaços próprios. O cartão de memória não é alterado.", &Tuning::autosave, nullptr, 0, 1, 1, "SOTC_AUTOSAVE"},
             {"ground_variation", "Ground variation", "Variação do chão", "Breaks up the repetition of grass, earth and sand. Off: the game's tiles. Costs GPU time.",
              "Quebra a repetição da grama, terra e areia. Desligado: os ladrilhos do jogo. Custa tempo de GPU.", &Tuning::groundVariation, nullptr, 0, 1, 1, "SOTC_GROUND_VARIATION"},
+            {"cloth_material", "Hair transparency", "Transparência do cabelo", "Hair and cloth keep the PS2's rule: the faint edges of a lock do not hide what is behind. Off: holes in crossing locks.",
+             "Cabelo e tecido com a regra do PS2: as bordas fracas não escondem o que está atrás. Desligado: buracos nas mechas.", &Tuning::clothMaterial, nullptr, 0, 1, 1, "SOTC_MESH_MATERIAL"},
+            {"steady_mane", "Steady mane", "Crina estável", "Agro's mane moves at the pace of the PS2's 30 fps, drawn smoothly. Off: it jerks more at 60.",
+             "A crina de Agro no ritmo dos 30 fps do PS2, desenhada suavemente. Desligado: salta mais a 60.", &Tuning::steadyMane, nullptr, 0, 1, 1, "SOTC_HAIR_RATE"},
             {"mod_outfit", "Wander's outfit", "Roupa de Wander", "Replaces Wander's clothes. Changes at once.", "Replaces Wander's clothes. Changes at once.", nullptr, &Tuning::modOutfit, 0.0f, 4.0f, 1.0f, nullptr},
             {"mod_cloak", "Cloak", "Capa", "Replaces the cloak, over any outfit.", "Replaces the cloak, over any outfit.", nullptr, &Tuning::modCloak, 0.0f, 2.0f, 1.0f, nullptr},
             {"mod_agro", "Agro", "Agro", "Another coat for Agro.", "Another coat for Agro.", nullptr, &Tuning::modAgro, 0.0f, 3.0f, 1.0f, nullptr},

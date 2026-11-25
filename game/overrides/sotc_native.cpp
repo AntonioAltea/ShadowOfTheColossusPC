@@ -47,6 +47,7 @@
 #include <cstdio>
 #include <cstddef>
 #include <cstdlib>
+#include <array>
 #include <cstring>
 #include <iostream>
 #include <set>
@@ -850,11 +851,13 @@ namespace sotc_native
             // Hair and leaves: the game draws them without mip levels, their
             // strands kept at any distance. Levels below the original's size
             // blurred them into a veil.
+            static const int extraLevels = std::getenv("SOTC_HD_CUTOUT_LEVELS") ? std::atoi(std::getenv("SOTC_HD_CUTOUT_LEVELS")) : 0; // past the original's size
             if (const auto own = g_hdOriginalWidth.find(blob.id); blob.alphaMin < 100u && own != g_hdOriginalWidth.end())
             {
                 uint32_t keep = 1u;
                 for (uint32_t w = blob.width; w > own->second && keep < blob.levels; w /= 2u)
                     ++keep;
+                keep = std::min(blob.levels, keep + static_cast<uint32_t>(std::max(0, extraLevels)));
                 size_t bytes = 0;
                 for (uint32_t l = 0, w = blob.width, h = blob.height; l < keep; ++l, w = std::max(1u, w / 2u), h = std::max(1u, h / 2u))
                     bytes += static_cast<size_t>((w + 3u) / 4u) * ((h + 3u) / 4u) * 16u;
@@ -3067,6 +3070,19 @@ namespace sotc_native
         const uint32_t object = GPR_U32(ctx, 4);
         const uint32_t header = g_requested;
         const uint32_t layer = currentLayer(2u);
+        // A cloth's mesh (manager_sub_01137F78, which keeps the cloth in s5 and
+        // its grid in s6) is drawn with a surface of its owner's model
+        // (modelSetSurface): model + 0x144 -> [0] -> +0x20, surface grid + 0x2c.
+        uint32_t material = 0u, surface = 0u;
+        if (GPR_U32(ctx, 31) == 0x01138274u)
+        {
+            const uint32_t cloth = GPR_U32(ctx, 21), grid = GPR_U32(ctx, 22);
+            const uint32_t instance = word(word(cloth + 0x28u) + 0x144u);
+            material = instance ? word(word(instance) + 0x20u) : 0u;
+            surface = word(grid + 0x2Cu);
+            if (material && surface >= word(material + 0x54u))
+                material = 0u;
+        }
         g_meshDisp(rdram, ctx, runtime);
         HookTimer hookTimer;
         if (!g_cameraContext || g_ram[(object + 8u) & 0x1FFFFFFu] != '#')
@@ -3158,6 +3174,18 @@ namespace sotc_native
         state.texture = texture(header);
         state.order = layer;
         state.fogged = layer == 2u || layer == 3u;
+        if (material && native_renderer::tuning().clothMaterial)
+        {
+            // The surface's own registers, as for a model: hair and cloth have
+            // TEST GEQUAL 0x40 with AFAIL FB_ONLY, so the faint edges of a lock
+            // are drawn but do not hide the locks (and the body) behind them.
+            const uint32_t s = word(material + 0x50u) + surface * 0x120u;
+            state.blend = surfaceBlend(s);
+            state.clamp = surfaceClamp(s);
+            surfaceLod(material, surface, state);
+            if (state.texture)
+                surfaceAlphaTest(material, surface, state);
+        }
         if (g_haveViewLights)
         {
             state.lit = true;
